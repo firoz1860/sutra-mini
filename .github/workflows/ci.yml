@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+      - name: gofmt
+        working-directory: backend
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && echo 'run gofmt' && exit 1)
+      - name: vet
+        working-directory: backend
+        run: go vet ./...
+      - name: build
+        working-directory: backend
+        run: go build ./...
+      - name: test
+        working-directory: backend
+        run: go test ./tests/ -count=1 -timeout 420s
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20.x"
+      - name: install
+        working-directory: frontend
+        run: npm ci
+      - name: typecheck
+        working-directory: frontend
+        run: npm run typecheck
+      - name: build
+        working-directory: frontend
+        run: npm run build

@@ -1,0 +1,28 @@
+# Secrets / environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Go build artifacts
+/backend/bin/
+*.exe
+*.test
+coverage.out
+*.out
+
+# Node / Next.js
+node_modules/
+/frontend/.next/
+/frontend/out/
+/frontend/next-env.d.ts
+*.tsbuildinfo
+
+# Editor / OS
+.idea/
+.DS_Store
+Thumbs.db
+
+# Embedded Postgres test data (if ever written into the repo tree)
+.embedded-postgres-go/
