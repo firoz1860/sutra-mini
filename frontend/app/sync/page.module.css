@@ -270,7 +270,7 @@
   display: grid;
   grid-template-columns: 1.5fr 130px 160px auto;
   gap: var(--sm-4);
-  align-items: end;
+  align-items: flex-end;
 }
 .field {
   display: flex;
@@ -813,11 +813,11 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: var(--sm-4);
-  align-items: end;
+  align-items: flex-end;
 }
 .mForm .formSubmit {
   display: flex;
-  align-items: end;
+  align-items: flex-end;
 }
 
 .linkBtn {
