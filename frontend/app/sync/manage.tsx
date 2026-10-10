@@ -136,7 +136,7 @@ function Thumb({ url, alt }: { url?: string; alt: string }) {
   return <img className={styles.thumb} src={url} alt="" onError={() => setBroken(true)} loading="lazy" />;
 }
 
-export function JobWorkersTab({ token, onChanged }: { token: string | null; onChanged: () => void }) {
+export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: string | null; onChanged: () => void; onUnauthorized: () => void }) {
   const [parties, setParties] = useState<Party[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -151,13 +151,17 @@ export function JobWorkersTab({ token, onChanged }: { token: string | null; onCh
     if (!token) return;
     try {
       const { status, data } = await apiJSON("/api/parties", token);
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status !== 200) throw new Error(errOf(data, `request failed (${status})`));
       setParties(((data as { parties?: Party[] }).parties ?? []) as Party[]);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not load job-workers");
     }
-  }, [token]);
+  }, [token, onUnauthorized]);
 
   useEffect(() => {
     void load();
@@ -176,6 +180,10 @@ export function JobWorkersTab({ token, onChanged }: { token: string | null; onCh
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name, phone }),
       });
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status === 201) {
         setName("");
         setPhone("");
@@ -200,6 +208,10 @@ export function JobWorkersTab({ token, onChanged }: { token: string | null; onCh
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: editName, phone: editPhone }),
       });
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status === 200) {
         setEditId(null);
         setFeedback({ kind: "ok", msg: "Job-worker updated." });
@@ -312,7 +324,7 @@ export function JobWorkersTab({ token, onChanged }: { token: string | null; onCh
   );
 }
 
-export function SKUsTab({ token, onChanged }: { token: string | null; onChanged: () => void }) {
+export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | null; onChanged: () => void; onUnauthorized: () => void }) {
   const [skus, setSKUs] = useState<SKU[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -328,13 +340,17 @@ export function SKUsTab({ token, onChanged }: { token: string | null; onChanged:
     if (!token) return;
     try {
       const { status, data } = await apiJSON("/api/skus", token);
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status !== 200) throw new Error(errOf(data, `request failed (${status})`));
       setSKUs(((data as { skus?: SKU[] }).skus ?? []) as SKU[]);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not load SKUs");
     }
-  }, [token]);
+  }, [token, onUnauthorized]);
 
   useEffect(() => {
     void load();
@@ -353,6 +369,10 @@ export function SKUsTab({ token, onChanged }: { token: string | null; onChanged:
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code, name, image_url: imageURL }),
       });
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status === 201) {
         setCode("");
         setName("");
@@ -380,6 +400,10 @@ export function SKUsTab({ token, onChanged }: { token: string | null; onChanged:
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: editName, image_url: editImage }),
       });
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status === 200) {
         setEditId(null);
         setFeedback({ kind: "ok", msg: "SKU updated." });
@@ -506,8 +530,8 @@ export function SKUsTab({ token, onChanged }: { token: string | null; onChanged:
 
 type IssuePayload = { party_id: string; sku_id: string; qty: number; issued_on: string; unit_rate_rupees: string };
 
-export function IssuesTab(props: { token: string | null; issues: Issue[]; onChanged: () => void }) {
-  const { token, issues, onChanged } = props;
+export function IssuesTab(props: { token: string | null; issues: Issue[]; onChanged: () => void; onUnauthorized: () => void }) {
+  const { token, issues, onChanged, onUnauthorized } = props;
   const [parties, setParties] = useState<Party[]>([]);
   const [skus, setSKUs] = useState<SKU[]>([]);
   const [refError, setRefError] = useState<string | null>(null);
@@ -528,6 +552,10 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
     if (!token) return;
     try {
       const [pr, sr] = await Promise.all([apiJSON("/api/parties", token), apiJSON("/api/skus", token)]);
+      if (pr.status === 401 || sr.status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (pr.status !== 200) throw new Error(errOf(pr.data, "parties failed"));
       if (sr.status !== 200) throw new Error(errOf(sr.data, "skus failed"));
       setParties(((pr.data as { parties?: Party[] }).parties ?? []) as Party[]);
@@ -536,7 +564,7 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
     } catch (e) {
       setRefError(e instanceof Error ? e.message : "could not load form options");
     }
-  }, [token]);
+  }, [token, onUnauthorized]);
 
   useEffect(() => {
     void loadRefs();
@@ -572,6 +600,10 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
         headers: { "content-type": "application/json", "Idempotency-Key": key },
         body: JSON.stringify(payload),
       });
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status === 201) {
         idemRef.current = null;
         setQty("1");
@@ -708,7 +740,7 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
                     {openIssue === i.id ? "Hide receipts" : "View receipts"}
                   </button>
                 </div>
-                {openIssue === i.id && <ReceiptHistory issueId={i.id} />}
+                {openIssue === i.id && <ReceiptHistory issueId={i.id} token={token} onUnauthorized={onUnauthorized} />}
               </li>
             ))}
           </ul>
@@ -736,7 +768,7 @@ type HistoryRow = {
 
 const HISTORY_LIMIT = 20;
 
-export function ReceiptHistory({ issueId }: { issueId: string }) {
+export function ReceiptHistory({ issueId, token, onUnauthorized }: { issueId: string; token: string | null; onUnauthorized: () => void }) {
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -746,8 +778,12 @@ export function ReceiptHistory({ issueId }: { issueId: string }) {
     try {
       const { status, data } = await apiJSON(
         `/api/jobwork/receipts?issue_id=${encodeURIComponent(issueId)}&limit=${HISTORY_LIMIT}&offset=${offset}`,
-        null,
+        token,
       );
+      if (status === 401) {
+        onUnauthorized();
+        return;
+      }
       if (status !== 200) throw new Error(errOf(data, `request failed (${status})`));
       const d = data as { receipts?: HistoryRow[]; total?: number };
       setRows(d.receipts ?? []);
@@ -756,7 +792,7 @@ export function ReceiptHistory({ issueId }: { issueId: string }) {
     } catch (e) {
       setError(e instanceof Error ? e.message : "could not load receipts");
     }
-  }, [issueId, offset]);
+  }, [issueId, offset, token, onUnauthorized]);
 
   useEffect(() => {
     void load();

@@ -155,37 +155,87 @@ export default function SyncPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const [token, setToken] = useState<string | null>(null);
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
+  // Bumped on every sign-out / session expiry so a late response from a prior
+  // session is discarded instead of repopulating protected data.
+  const sessionGen = useRef(0);
+  const pollCtl = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+  // clearSession ends the operator session: it invalidates in-flight work,
+  // stops polling, and wipes all operational data from the screen. A business
+  // mutation is never auto-resubmitted; the pending-receipt record is left in
+  // sessionStorage so its outcome can still be reconciled after signing back in.
+  const clearSession = useCallback((expired: boolean) => {
+    sessionGen.current += 1;
+    pollCtl.current?.abort("session-ended");
+    setToken(null);
     try {
-      try {
-        const { status, data } = await requestJSON(EP.vouchers, {}, 8000, signal);
-        if (status !== 200) throw new Error(`backend returned ${status}`);
-        const list = (data as { vouchers?: Voucher[] })?.vouchers;
-        setVouchers(Array.isArray(list) ? list : []);
-        setError(null);
-        setLastUpdated(new Date());
-      } catch (e) {
-        if (!(e instanceof ReqError && e.kind === "aborted")) setError(describeErr(e, "vouchers"));
-      }
-      try {
-        const { status, data } = await requestJSON(EP.issues, {}, 8000, signal);
-        if (status !== 200) throw new Error(`backend returned ${status}`);
-        const list = (data as { issues?: Issue[] })?.issues;
-        const issuesList = Array.isArray(list) ? list : [];
-        setIssues(issuesList);
-        setIssueId((cur) => cur || (issuesList[0]?.id ?? ""));
-        setIssuesError(null);
-      } catch (e) {
-        if (!(e instanceof ReqError && e.kind === "aborted")) setIssuesError(describeErr(e, "issues"));
-      }
-    } finally {
-      setLoading(false);
-      inFlight.current = false;
+      sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+    } catch {
+      /* ignore */
     }
+    setVouchers(null);
+    setIssues([]);
+    setIssueId("");
+    setLastUpdated(null);
+    setLoading(true);
+    setError(null);
+    setIssuesError(null);
+    setRetrying({});
+    setTab("overview");
+    setFeedback(expired ? { kind: "err", msg: "Session expired. Please sign in again." } : null);
   }, []);
+
+  const handleUnauthorized = useCallback(() => clearSession(true), [clearSession]);
+  const logout = useCallback(() => clearSession(false), [clearSession]);
+
+  const load = useCallback(
+    async (signal?: AbortSignal, genArg?: number) => {
+      if (!token) return;
+      if (inFlight.current) return;
+      inFlight.current = true;
+      const gen = genArg ?? sessionGen.current;
+      const headers = { Authorization: `Bearer ${token}` };
+      try {
+        try {
+          const { status, data } = await requestJSON(EP.vouchers, { headers }, 8000, signal);
+          if (sessionGen.current !== gen) return;
+          if (status === 401) {
+            handleUnauthorized();
+            return;
+          }
+          if (status !== 200) throw new Error(`backend returned ${status}`);
+          const list = (data as { vouchers?: Voucher[] })?.vouchers;
+          setVouchers(Array.isArray(list) ? list : []);
+          setError(null);
+          setLastUpdated(new Date());
+        } catch (e) {
+          if (sessionGen.current !== gen) return;
+          if (!(e instanceof ReqError && e.kind === "aborted")) setError(describeErr(e, "vouchers"));
+        }
+        try {
+          const { status, data } = await requestJSON(EP.issues, { headers }, 8000, signal);
+          if (sessionGen.current !== gen) return;
+          if (status === 401) {
+            handleUnauthorized();
+            return;
+          }
+          if (status !== 200) throw new Error(`backend returned ${status}`);
+          const list = (data as { issues?: Issue[] })?.issues;
+          const issuesList = Array.isArray(list) ? list : [];
+          setIssues(issuesList);
+          setIssueId((cur) => cur || (issuesList[0]?.id ?? ""));
+          setIssuesError(null);
+        } catch (e) {
+          if (sessionGen.current !== gen) return;
+          if (!(e instanceof ReqError && e.kind === "aborted")) setIssuesError(describeErr(e, "issues"));
+        }
+      } finally {
+        if (sessionGen.current === gen) setLoading(false);
+        inFlight.current = false;
+      }
+    },
+    [token, handleUnauthorized],
+  );
 
   useEffect(() => {
     const restored = loadPersisted();
@@ -193,14 +243,17 @@ export default function SyncPage() {
   }, []);
 
   useEffect(() => {
+    if (!token) return;
     const ctl = new AbortController();
-    void load(ctl.signal);
-    const id = setInterval(() => void load(ctl.signal), 4000);
+    pollCtl.current = ctl;
+    const gen = sessionGen.current;
+    void load(ctl.signal, gen);
+    const id = setInterval(() => void load(ctl.signal, gen), 4000);
     return () => {
       clearInterval(id);
       ctl.abort("external");
     };
-  }, [load]);
+  }, [load, token]);
 
   useEffect(() => {
     let active = true;
@@ -210,6 +263,10 @@ export default function SyncPage() {
     } catch {
       /* ignore */
     }
+    // Restore a stored token optimistically so the dashboard is available
+    // immediately; the session check below (and any 401 from the first poll)
+    // clears it if it turns out to be stale or invalid.
+    if (stored) setToken(stored);
     void (async () => {
       try {
         const res = await fetch("/api/auth/session", {
@@ -219,9 +276,8 @@ export default function SyncPage() {
         const data = (await res.json().catch(() => null)) as { authenticated?: boolean; configured?: boolean } | null;
         if (!active) return;
         setAuthConfigured(typeof data?.configured === "boolean" ? data.configured : null);
-        if (stored && data?.authenticated) {
-          setToken(stored);
-        } else if (stored) {
+        if (stored && !data?.authenticated) {
+          setToken(null);
           try {
             sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
           } catch {
@@ -266,17 +322,9 @@ export default function SyncPage() {
     }
   }, []);
 
-  const logout = useCallback(() => {
-    setToken(null);
-    try {
-      sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   const doSubmit = useCallback(
     async (op: PendingOp) => {
+      if (!token) return;
       setSubmitting(true);
       setFeedback(null);
       try {
@@ -284,11 +332,17 @@ export default function SyncPage() {
           EP.receipts,
           {
             method: "POST",
-            headers: { "content-type": "application/json", "Idempotency-Key": op.key },
+            headers: { "content-type": "application/json", "Idempotency-Key": op.key, Authorization: `Bearer ${token}` },
             body: JSON.stringify(op.body),
           },
           10000,
         );
+        if (status === 401) {
+          // Keep the pending op persisted (not resubmitted): its outcome is
+          // still unknown and can be reconciled after signing back in.
+          handleUnauthorized();
+          return;
+        }
         if (status === 201) {
           if (!parseError && isValidReceiptResponse(data)) {
             persist(null);
@@ -316,7 +370,7 @@ export default function SyncPage() {
         void load();
       }
     },
-    [load],
+    [load, token, handleUnauthorized],
   );
 
   const createReceipt = useCallback(
@@ -370,10 +424,19 @@ export default function SyncPage() {
 
   const retryVoucher = useCallback(
     async (voucherId: string) => {
+      if (!token) return;
       setRetrying((r) => ({ ...r, [voucherId]: true }));
       setFeedback(null);
       try {
-        const { status, data } = await requestJSON(EP.retry(voucherId), { method: "POST" }, 10000);
+        const { status, data } = await requestJSON(
+          EP.retry(voucherId),
+          { method: "POST", headers: { Authorization: `Bearer ${token}` } },
+          10000,
+        );
+        if (status === 401) {
+          handleUnauthorized();
+          return;
+        }
         if (status < 200 || status >= 300) throw new Error((data as { error?: string })?.error ?? `retry failed (${status})`);
         setFeedback({ kind: "ok", msg: "Voucher queued for another attempt." });
         await load();
@@ -387,7 +450,7 @@ export default function SyncPage() {
         });
       }
     },
-    [load],
+    [load, token, handleUnauthorized],
   );
 
   const grouped: Record<Status, Voucher[]> = { pending: [], pushed: [], failed: [] };
@@ -416,10 +479,14 @@ export default function SyncPage() {
         </div>
         <div className={styles.headerRight}>
           <OperatorBar token={token} configured={authConfigured} onLogin={login} onLogout={logout} />
-          <span className={styles.freshness}>{freshness}</span>
-          <button type="button" className={styles.btnSecondary} onClick={() => void load()} disabled={loading && vouchers === null}>
-            Refresh list
-          </button>
+          {token && (
+            <>
+              <span className={styles.freshness}>{freshness}</span>
+              <button type="button" className={styles.btnSecondary} onClick={() => void load()} disabled={loading && vouchers === null}>
+                Refresh list
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -428,8 +495,22 @@ export default function SyncPage() {
         <p className={styles.subtitle}>Record received quantities and track their accounting sync.</p>
       </div>
 
-      <nav className={styles.tabBar} aria-label="Sections">
-        {TABS.map((t) => (
+      {!token ? (
+        <section className={styles.card} aria-labelledby="signin-title">
+          <h2 id="signin-title" className={styles.cardTitle}>
+            Operator sign-in required
+          </h2>
+          <p className={styles.cardDesc}>
+            {authConfigured === false
+              ? "Operator authentication is not configured on this deployment, so operational data cannot be shown here."
+              : "Sign in with the operator password (top right) to view issues and vouchers and to record receipts."}
+          </p>
+          <FeedbackBanner feedback={feedback} />
+        </section>
+      ) : (
+        <>
+          <nav className={styles.tabBar} aria-label="Sections">
+            {TABS.map((t) => (
           <button
             key={t.id}
             type="button"
@@ -442,9 +523,9 @@ export default function SyncPage() {
         ))}
       </nav>
 
-      {tab === "issues" && <IssuesTab token={token} issues={issues} onChanged={() => void load()} />}
-      {tab === "workers" && <JobWorkersTab token={token} onChanged={() => void load()} />}
-      {tab === "skus" && <SKUsTab token={token} onChanged={() => void load()} />}
+          {tab === "issues" && <IssuesTab token={token} issues={issues} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "workers" && <JobWorkersTab token={token} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "skus" && <SKUsTab token={token} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
 
       {tab === "overview" && (
         <>
@@ -515,6 +596,8 @@ export default function SyncPage() {
             retrying={retrying}
             onRetry={retryVoucher}
           />
+        </>
+      )}
         </>
       )}
         </>

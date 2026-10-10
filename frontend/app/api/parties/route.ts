@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 function forward(res: Response, body: string) {
-  return new NextResponse(body, { status: res.status, headers: { "content-type": "application/json" } });
+  return new NextResponse(body, { status: res.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 }
 
 export async function GET(req: NextRequest) {

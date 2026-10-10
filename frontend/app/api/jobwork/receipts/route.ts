@@ -14,8 +14,8 @@ export async function GET(req: NextRequest) {
   }
   try {
     const res = await fetch(target.toString(), { cache: "no-store", signal: AbortSignal.timeout(30000) });
-    return new NextResponse(await res.text(), { status: res.status, headers: { "content-type": "application/json" } });
+    return new NextResponse(await res.text(), { status: res.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   } catch {
-    return NextResponse.json({ error: "backend unreachable" }, { status: 502 });
+    return NextResponse.json({ error: "backend unreachable" }, { status: 502, headers: { "cache-control": "no-store" } });
   }
 }

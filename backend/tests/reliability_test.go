@@ -137,6 +137,7 @@ func TestReliabilityManualRetry(t *testing.T) {
 	ms.SetClientMode("C-retry", mockacct.ModeSuccess)
 
 	req, _ := http.NewRequest(http.MethodPost, api.URL+"/vouchers/"+id+"/retry", nil)
+	req.Header.Set("Authorization", "Bearer "+testBearer(t))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("retry request: %v", err)

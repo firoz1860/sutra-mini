@@ -67,18 +67,19 @@ func New(db *store.DB, allowedOrigins ...string) *Server {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("POST /jobwork/receipts", s.createReceipt)
-	mux.HandleFunc("GET /issues", s.listIssues)
-	mux.HandleFunc("GET /issues/{id}", s.getIssue)
-	mux.HandleFunc("GET /jobwork/receipts", s.listReceiptHistory)
-	mux.HandleFunc("GET /vouchers", s.listVouchers)
-	mux.HandleFunc("POST /vouchers/{id}/retry", s.retryVoucher)
-	mux.HandleFunc("POST /ask", s.askQuestion)
-	mux.HandleFunc("GET /healthz", s.healthz)
 
-	// Operator authentication.
+	// Public: health and the authentication surface only.
+	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("POST /auth/login", s.login)
 	mux.HandleFunc("GET /auth/session", s.session)
+
+	mux.HandleFunc("POST /jobwork/receipts", s.requireOperator(s.createReceipt))
+	mux.HandleFunc("GET /issues", s.requireOperator(s.listIssues))
+	mux.HandleFunc("GET /issues/{id}", s.requireOperator(s.getIssue))
+	mux.HandleFunc("GET /jobwork/receipts", s.requireOperator(s.listReceiptHistory))
+	mux.HandleFunc("GET /vouchers", s.requireOperator(s.listVouchers))
+	mux.HandleFunc("POST /vouchers/{id}/retry", s.requireOperator(s.retryVoucher))
+	mux.HandleFunc("POST /ask", s.requireOperator(s.askQuestion))
 
 	// Management + contact-detail endpoints: operator-only.
 	mux.HandleFunc("GET /parties", s.requireOperator(s.listParties))

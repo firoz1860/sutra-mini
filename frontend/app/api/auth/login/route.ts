@@ -16,8 +16,8 @@ export async function POST(req: NextRequest) {
       signal: AbortSignal.timeout(30000),
     });
     const out = await res.text();
-    return new NextResponse(out, { status: res.status, headers: { "content-type": "application/json" } });
+    return new NextResponse(out, { status: res.status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
   } catch {
-    return NextResponse.json({ error: "backend unreachable" }, { status: 502 });
+    return NextResponse.json({ error: "backend unreachable" }, { status: 502, headers: { "cache-control": "no-store" } });
   }
 }

@@ -143,7 +143,7 @@ func TestAuthGuardsAndLogin(t *testing.T) {
 func TestLoginUnconfiguredReturns503(t *testing.T) {
 	// No OPERATOR_PASSWORD/SESSION_SECRET set: login is unavailable and
 	// management stays locked by default.
-	api := startAPI(t)
+	api := startUnconfiguredAPI(t)
 	if st, _ := doReq(t, http.MethodPost, api.URL+"/auth/login", "", `{"password":"anything"}`); st != http.StatusServiceUnavailable {
 		t.Fatalf("unconfigured login: want 503, got %d", st)
 	}
@@ -285,7 +285,7 @@ func TestCreateIssueJourney(t *testing.T) {
 	}
 
 	// Receipt history links the correct SKU, party, and voucher.
-	hst, hb := doReq(t, http.MethodGet, api.URL+"/jobwork/receipts?issue_id="+issue.ID, "", "")
+	hst, hb := doReq(t, http.MethodGet, api.URL+"/jobwork/receipts?issue_id="+issue.ID, token, "")
 	if hst != http.StatusOK {
 		t.Fatalf("history: %d (%s)", hst, hb)
 	}
@@ -365,19 +365,21 @@ func TestPhoneRedaction(t *testing.T) {
 		fmt.Sprintf(`{"party_id":%q,"sku_id":%q,"qty":5,"issued_on":"2026-10-01","unit_rate_rupees":"10"}`, partyID, skuID))
 	issueID := jsonID(t, b)
 
-	// Public list: phone redacted.
-	_, lb := doReq(t, http.MethodGet, api.URL+"/issues", "", "")
+	// Unauthenticated reads are rejected outright (no body data leaks).
+	if st, _ := doReq(t, http.MethodGet, api.URL+"/issues", "", ""); st != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /issues: want 401, got %d", st)
+	}
+	if st, _ := doReq(t, http.MethodGet, api.URL+"/issues/"+issueID, "", ""); st != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated /issues/{id}: want 401, got %d", st)
+	}
+
+	// Operator list omits phone — contact detail lives in the detail view.
+	_, lb := doReq(t, http.MethodGet, api.URL+"/issues", token, "")
 	if strings.Contains(string(lb), "98765 43210") {
-		t.Fatalf("public /issues leaked phone: %s", lb)
+		t.Fatalf("operator /issues list leaked phone: %s", lb)
 	}
 
-	// Public detail: phone redacted.
-	_, db := doReq(t, http.MethodGet, api.URL+"/issues/"+issueID, "", "")
-	if strings.Contains(string(db), "98765 43210") {
-		t.Fatalf("public /issues/{id} leaked phone: %s", db)
-	}
-
-	// Operator detail: phone present.
+	// Operator detail includes phone.
 	_, ob := doReq(t, http.MethodGet, api.URL+"/issues/"+issueID, token, "")
 	if !strings.Contains(string(ob), "98765 43210") {
 		t.Fatalf("operator /issues/{id} missing phone: %s", ob)
