@@ -3,11 +3,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"os"
 	"regexp"
 	"strings"
 	"time"
 
+	"github.com/firoz1860/sutra-mini/backend/internal/ask"
 	"github.com/firoz1860/sutra-mini/backend/internal/receipts"
 	"github.com/firoz1860/sutra-mini/backend/internal/store"
 )
@@ -23,6 +26,7 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 type Server struct {
 	db             *store.DB
 	receipts       *receipts.Service
+	ask            *ask.Service
 	allowedOrigins []string
 }
 
@@ -30,7 +34,16 @@ func New(db *store.DB, allowedOrigins ...string) *Server {
 	if len(allowedOrigins) == 0 {
 		allowedOrigins = []string{"*"}
 	}
-	return &Server{db: db, receipts: receipts.New(db.Pool), allowedOrigins: allowedOrigins}
+	modelKey := os.Getenv("ANTHROPIC_API_KEY")
+	if modelKey == "" {
+		modelKey = os.Getenv("OPENAI_API_KEY")
+	}
+	return &Server{
+		db:             db,
+		receipts:       receipts.New(db.Pool),
+		ask:            ask.New(db, log.Default(), modelKey),
+		allowedOrigins: allowedOrigins,
+	}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -39,6 +52,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /issues/{id}", s.getIssue)
 	mux.HandleFunc("GET /vouchers", s.listVouchers)
 	mux.HandleFunc("POST /vouchers/{id}/retry", s.retryVoucher)
+	mux.HandleFunc("POST /ask", s.askQuestion)
 	mux.HandleFunc("GET /healthz", s.healthz)
 	return s.withCORS(mux)
 }
@@ -265,6 +279,45 @@ func (s *Server) retryVoucher(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "voucher_not_found", "no voucher with that id")
 	case errors.Is(err, store.ErrConflict):
 		writeErr(w, http.StatusConflict, "retry_not_allowed", err.Error())
+	default:
+		writeErr(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
+	}
+}
+
+type askInput struct {
+	Question string `json:"question"`
+}
+
+func (s *Server) askQuestion(w http.ResponseWriter, r *http.Request) {
+	if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		writeErr(w, http.StatusBadRequest, "unsupported_media_type", "Content-Type must be application/json")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	var in askInput
+	if err := dec.Decode(&in); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid_json", "request body is not valid JSON")
+		return
+	}
+	q := strings.TrimSpace(in.Question)
+	if q == "" || len(q) > 500 {
+		writeErr(w, http.StatusBadRequest, "invalid_question", "question must be a non-empty string up to 500 characters")
+		return
+	}
+
+	resp, err := s.ask.Answer(r.Context(), q)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, resp)
+	case errors.Is(err, ask.ErrNoSKU) || errors.Is(err, ask.ErrNoParty):
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":         err.Error(),
+			"code":          "unresolved",
+			"tool_calls":    resp.ToolCalls,
+			"model_stubbed": resp.ModelStubbed,
+		})
 	default:
 		writeErr(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
 	}

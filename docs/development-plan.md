@@ -22,12 +22,18 @@ Status snapshot for the assessment build. All mandatory items are complete and v
 - [x] Verification: gofmt, vet, build, tests; frontend typecheck + build.
 - [x] Docs: README, AGENT_NOTES, RECORDING_SCRIPT, .env.example, .gitignore, this plan.
 
-## Not done (explicitly scoped out / blocked)
+## Done (follow-up)
 
-- [ ] Neon live verification — no credentials in the environment (README has exact steps).
+- [x] Neon live verification — migrate+seed and full end-to-end flow run against the
+      live Neon database (pooled endpoint + channel_binding).
+- [x] CORS on the API (configurable via `CORS_ALLOWED_ORIGINS`) + `.env` autoloading.
+- [x] Optional `POST /ask` LLM endpoint — read-only DB tools, each call logged, model
+      stubbed (no API key) and reported as such; covered by `TestAskOutstanding`.
+
+## Not done (blocked)
+
 - [ ] `go test -race` — no cgo/C toolchain available.
 - [ ] Screen recording — no capture tooling; script prepared and marked pending.
-- [ ] Optional `/ask` LLM endpoint — out of scope under the time budget.
 
 ## If continued
 

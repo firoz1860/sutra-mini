@@ -337,3 +337,48 @@ func (d *DB) OutstandingForSKUParty(ctx context.Context, skuCode, partyName stri
 	}
 	return outstanding, found, nil
 }
+
+type SKURef struct {
+	ID   string
+	Code string
+	Name string
+}
+
+type PartyRef struct {
+	ID   string
+	Name string
+}
+
+func (d *DB) ListSKUs(ctx context.Context) ([]SKURef, error) {
+	rows, err := d.Pool.Query(ctx, `SELECT id, code, name FROM skus ORDER BY code`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SKURef
+	for rows.Next() {
+		var s SKURef
+		if err := rows.Scan(&s.ID, &s.Code, &s.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+func (d *DB) ListParties(ctx context.Context) ([]PartyRef, error) {
+	rows, err := d.Pool.Query(ctx, `SELECT id, name FROM parties ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PartyRef
+	for rows.Next() {
+		var p PartyRef
+		if err := rows.Scan(&p.ID, &p.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}

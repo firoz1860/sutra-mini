@@ -263,6 +263,17 @@ curl -i -X POST http://localhost:8090/api/vouchers \
   -d '{"client_ref":"dup-demo-1","type":"jobwork_receipt","amount_paise":15000}'
 ```
 
+**Ask** (optional LLM feature) — answers "how much of SKU X is still with job-worker Y?"
+using read-only DB tools; each tool call is logged and returned. With no API key set it
+runs a deterministic stubbed model and reports `"model_stubbed": true`:
+
+```bash
+curl -s -X POST http://localhost:8080/ask \
+  -H 'Content-Type: application/json' \
+  -d '{"question":"how much of SKU-COTTON is still with Radha Weavers?"}'
+# -> {"answer":"...","sku":"...","party":"...","outstanding_qty":N,"tool_calls":[...],"model_stubbed":true}
+```
+
 **Health:** `curl -s http://localhost:8080/healthz`
 
 ---
