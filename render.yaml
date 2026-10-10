@@ -2,8 +2,9 @@ services:
   - type: web
     name: sutra-mini-backend
     runtime: docker
-    dockerfilePath: backend/Dockerfile
-    dockerContext: backend
+    rootDir: backend
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
     plan: free
     healthCheckPath: /healthz
     autoDeploy: true
