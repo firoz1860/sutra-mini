@@ -1,0 +1,106 @@
+
+:root {
+  /* Surfaces & page */
+  --sm-bg: #f4f2ea;
+  --sm-surface: #ffffff;
+  --sm-surface-2: #fbfaf5;
+  --sm-raised: rgba(255, 255, 255, 0.92);
+
+  /* Ink (charcoal with a green cast) */
+  --sm-ink: #1b241f; /* ~13:1 on surface */
+  --sm-ink-2: #51605a; /* ~6.2:1 on surface */
+  --sm-ink-3: #68756d; /* ~4.7:1 on surface */
+
+  /* Deep forest-green primary */
+  --sm-primary: #1d6b4f; /* white text ~5.9:1 */
+  --sm-primary-strong: #154c38;
+  --sm-primary-soft: #e7efe9;
+
+  /* Muted sage accent */
+  --sm-sage: #7f9a8b;
+  --sm-sage-soft: #eef2ee;
+
+  /* Restrained brass — hierarchy accent only, never body text */
+  --sm-brass: #a2823f;
+  --sm-brass-ink: #7a5f28; /* ~5:1 on surface, for the rare brass label */
+  --sm-brass-soft: #f4ecda;
+
+  /* Status (each paired with text/icon, never colour alone) */
+  --sm-pending-ink: #895611;
+  --sm-pending-bg: #fbf3e2;
+  --sm-pending-border: #ecd8ac;
+  --sm-pushed-ink: #1f6a43;
+  --sm-pushed-bg: #e9f5ee;
+  --sm-pushed-border: #c2e2ce;
+  --sm-failed-ink: #a62b23;
+  --sm-failed-bg: #fbecea;
+  --sm-failed-border: #f0cac6;
+
+  /* Lines */
+  --sm-border: #e4e0d4;
+  --sm-border-strong: #d4cfbf;
+  --sm-hair: #efebe0;
+
+  /* Radii — restrained */
+  --sm-r-sm: 6px;
+  --sm-r: 9px;
+  --sm-r-lg: 13px;
+  --sm-r-pill: 999px;
+
+  /* Shadows — soft and warm */
+  --sm-shadow-1: 0 1px 2px rgba(27, 36, 31, 0.05), 0 1px 1px rgba(27, 36, 31, 0.04);
+  --sm-shadow-2: 0 6px 20px -8px rgba(27, 36, 31, 0.16);
+  --sm-shadow-head: 0 6px 18px -12px rgba(27, 36, 31, 0.28);
+  --sm-ring: 0 0 0 3px rgba(29, 107, 79, 0.28);
+
+  /* Spacing scale (dense dashboard rhythm) */
+  --sm-1: 4px;
+  --sm-2: 8px;
+  --sm-3: 12px;
+  --sm-4: 16px;
+  --sm-5: 20px;
+  --sm-6: 24px;
+  --sm-8: 32px;
+
+  /* Motion */
+  --sm-ease: cubic-bezier(0.2, 0.65, 0.25, 1);
+  --sm-dur-1: 140ms;
+  --sm-dur-2: 200ms;
+  --sm-reveal: 220ms;
+
+  /* Type */
+  --sm-font-sans: var(--font-sans), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --sm-font-display: var(--font-display), Georgia, "Times New Roman", serif;
+  --sm-font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --sm-header-h: 72px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-padding-top: calc(var(--sm-header-h) + 12px);
+}
+
+html,
+body {
+  margin: 0;
+}
+
+body {
+  background: var(--sm-bg);
+  color: var(--sm-ink);
+  font-family: var(--sm-font-sans);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv05" 1;
+}
+
+/* Tabular figures everywhere numbers are compared or counted. */
+.sm-tnum {
+  font-variant-numeric: tabular-nums;
+}

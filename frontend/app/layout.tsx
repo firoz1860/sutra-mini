@@ -1,4 +1,21 @@
 import type { ReactNode } from "react";
+import { Hanken_Grotesk, Fraunces } from "next/font/google";
+import "./globals.css";
+
+const sans = Hanken_Grotesk({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const display = Fraunces({
+  subsets: ["latin"],
+  weight: ["500", "600"],
+  style: ["normal"],
+  variable: "--font-display",
+  display: "swap",
+});
 
 export const metadata = {
   title: "Sutra Mini",
@@ -7,17 +24,8 @@ export const metadata = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body
-        style={{
-          margin: 0,
-          fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, sans-serif",
-          background: "#f6f7f4",
-          color: "#182621",
-        }}
-      >
-        {children}
-      </body>
+    <html lang="en" className={`${sans.variable} ${display.variable}`}>
+      <body>{children}</body>
     </html>
   );
 }

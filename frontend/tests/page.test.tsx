@@ -881,3 +881,23 @@ describe("SyncPage refresh list", () => {
     expect(screen.queryByText(/jwr-v-late2/i)).toBeNull();
   });
 });
+
+describe("SyncPage issue progress (derived)", () => {
+  it("derives a received-progress bar from issued/received and handles zero issued defensively", async () => {
+    server.issues = [
+      { id: "issue-1", issued_qty: 10, received_qty: 4, outstanding_qty: 6, sku: { code: "SKU-A", name: "Cotton" }, party: { name: "Weaver" } },
+      { id: "issue-0", issued_qty: 0, received_qty: 0, outstanding_qty: 0, sku: { code: "SKU-Z", name: "Zero" }, party: { name: "None" } },
+    ];
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: /job-work issues/i }));
+
+    const bars = await screen.findAllByRole("progressbar");
+    expect(bars.length).toBe(2);
+    // 4 of 10 received = 40%, derived purely from existing quantities.
+    expect(bars[0].getAttribute("aria-valuenow")).toBe("40");
+    expect(screen.getByText("4 of 10 received (40%)")).toBeTruthy();
+    // Zero issued must not divide by zero and must read as 0%.
+    expect(bars[1].getAttribute("aria-valuenow")).toBe("0");
+    expect(screen.getByText(/No quantity issued yet/i)).toBeTruthy();
+  });
+});
