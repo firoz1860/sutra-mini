@@ -17,8 +17,18 @@ import {
   type Status,
   type Voucher,
 } from "./ui";
+import { IssuesTab, JobWorkersTab, OperatorBar, SKUsTab } from "./manage";
 
 const PENDING_STORAGE_KEY = "sutra.pendingReceipt";
+const OPERATOR_TOKEN_KEY = "sutra.operatorToken";
+
+type Tab = "overview" | "issues" | "workers" | "skus";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "overview", label: "Sync overview" },
+  { id: "issues", label: "Job-work issues" },
+  { id: "workers", label: "Job-workers" },
+  { id: "skus", label: "SKUs" },
+];
 
 function todayLocal(): string {
   const d = new Date();
@@ -142,6 +152,10 @@ export default function SyncPage() {
   const [pendingOp, setPendingOp] = useState<PendingOp | null>(null);
   const [discardedFp, setDiscardedFp] = useState<string | null>(null);
 
+  const [tab, setTab] = useState<Tab>("overview");
+  const [token, setToken] = useState<string | null>(null);
+  const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
+
   const load = useCallback(async (signal?: AbortSignal) => {
     if (inFlight.current) return;
     inFlight.current = true;
@@ -187,6 +201,79 @@ export default function SyncPage() {
       ctl.abort("external");
     };
   }, [load]);
+
+  useEffect(() => {
+    let active = true;
+    let stored: string | null = null;
+    try {
+      stored = sessionStorage.getItem(OPERATOR_TOKEN_KEY);
+    } catch {
+      /* ignore */
+    }
+    void (async () => {
+      try {
+        const res = await fetch("/api/auth/session", {
+          headers: stored ? { Authorization: `Bearer ${stored}` } : {},
+          cache: "no-store",
+        });
+        const data = (await res.json().catch(() => null)) as { authenticated?: boolean; configured?: boolean } | null;
+        if (!active) return;
+        setAuthConfigured(typeof data?.configured === "boolean" ? data.configured : null);
+        if (stored && data?.authenticated) {
+          setToken(stored);
+        } else if (stored) {
+          try {
+            sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        if (active) setAuthConfigured(null);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const login = useCallback(async (password: string): Promise<string | null> => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password }),
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => null)) as { token?: string; error?: string } | null;
+      if (res.status === 200 && data?.token) {
+        setToken(data.token);
+        setAuthConfigured(true);
+        try {
+          sessionStorage.setItem(OPERATOR_TOKEN_KEY, data.token);
+        } catch {
+          /* ignore */
+        }
+        return null;
+      }
+      if (res.status === 503) {
+        setAuthConfigured(false);
+        return "Operator sign-in is not configured on this deployment.";
+      }
+      return data?.error ?? `Sign-in failed (HTTP ${res.status}).`;
+    } catch {
+      return "Could not reach the server.";
+    }
+  }, []);
+
+  const logout = useCallback(() => {
+    setToken(null);
+    try {
+      sessionStorage.removeItem(OPERATOR_TOKEN_KEY);
+    } catch {
+      /* ignore */
+    }
+  }, []);
 
   const doSubmit = useCallback(
     async (op: PendingOp) => {
@@ -328,6 +415,7 @@ export default function SyncPage() {
           </span>
         </div>
         <div className={styles.headerRight}>
+          <OperatorBar token={token} configured={authConfigured} onLogin={login} onLogout={logout} />
           <span className={styles.freshness}>{freshness}</span>
           <button type="button" className={styles.btnSecondary} onClick={() => void load()} disabled={loading && vouchers === null}>
             Refresh list
@@ -340,7 +428,27 @@ export default function SyncPage() {
         <p className={styles.subtitle}>Record received quantities and track their accounting sync.</p>
       </div>
 
-      <StatusSummary counts={counts} onJump={jump} />
+      <nav className={styles.tabBar} aria-label="Sections">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            className={`${styles.tab} ${tab === t.id ? styles.tabActive : ""}`}
+            aria-current={tab === t.id ? "page" : undefined}
+            onClick={() => setTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "issues" && <IssuesTab token={token} issues={issues} onChanged={() => void load()} />}
+      {tab === "workers" && <JobWorkersTab token={token} onChanged={() => void load()} />}
+      {tab === "skus" && <SKUsTab token={token} onChanged={() => void load()} />}
+
+      {tab === "overview" && (
+        <>
+          <StatusSummary counts={counts} onJump={jump} />
 
       <FeedbackBanner feedback={feedback} />
 
@@ -407,6 +515,8 @@ export default function SyncPage() {
             retrying={retrying}
             onRetry={retryVoucher}
           />
+        </>
+      )}
         </>
       )}
 

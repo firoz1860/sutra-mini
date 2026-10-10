@@ -25,8 +25,10 @@ export type Issue = {
   issued_qty: number;
   received_qty: number;
   outstanding_qty: number;
-  sku: { code: string; name: string };
-  party: { name: string };
+  issued_on?: string;
+  unit_rate_paise?: number;
+  sku: { id?: string; code: string; name: string; image_url?: string };
+  party: { id?: string; name: string; phone?: string };
 };
 
 export type PendingOp = { key: string; body: { issue_id: string; qty: number; received_on: string } };
