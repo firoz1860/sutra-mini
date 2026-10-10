@@ -30,6 +30,8 @@ type Issue = {
 
 type PendingOp = { key: string; body: { issue_id: string; qty: number; received_on: string } };
 
+const PENDING_STORAGE_KEY = "sutra.pendingReceipt";
+
 const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" });
 const formatPaise = (p: number) => inr.format(p / 100);
 const formatTime = (iso: string) => {
@@ -43,20 +45,102 @@ function todayLocal(): string {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-async function fetchJSON(url: string, opts: RequestInit, timeoutMs: number): Promise<Response> {
+function fingerprint(body: PendingOp["body"]): string {
+  return `${body.issue_id}|${body.qty}|${body.received_on}`;
+}
+
+class ReqError extends Error {
+  kind: "timeout" | "aborted" | "network";
+  constructor(kind: "timeout" | "aborted" | "network") {
+    super(kind);
+    this.kind = kind;
+  }
+}
+
+type ReqResult = { status: number; data: unknown; parseError: boolean };
+
+async function requestJSON(
+  url: string,
+  opts: RequestInit,
+  timeoutMs: number,
+  external?: AbortSignal,
+): Promise<ReqResult> {
   const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  const onExternalAbort = () => ctl.abort("external");
+  if (external) {
+    if (external.aborted) ctl.abort("external");
+    else external.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  const timer = setTimeout(() => ctl.abort("timeout"), timeoutMs);
   try {
-    return await fetch(url, { ...opts, cache: "no-store", signal: ctl.signal });
+    const res = await fetch(url, { ...opts, cache: "no-store", signal: ctl.signal });
+    const text = await res.text();
+    let data: unknown;
+    let parseError = false;
+    if (text.trim().length > 0) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        parseError = true;
+      }
+    }
+    return { status: res.status, data, parseError };
+  } catch (e) {
+    if (ctl.signal.aborted) {
+      throw new ReqError(ctl.signal.reason === "timeout" ? "timeout" : "aborted");
+    }
+    throw new ReqError("network");
   } finally {
     clearTimeout(timer);
+    if (external) external.removeEventListener("abort", onExternalAbort);
   }
 }
 
 function describeErr(e: unknown, what: string): string {
-  if (e instanceof Error && e.name === "AbortError") return `${what} request timed out`;
+  if (e instanceof ReqError) {
+    if (e.kind === "timeout") return `${what} request timed out`;
+    return `${what} unavailable`;
+  }
   if (e instanceof Error) return e.message;
   return `failed to load ${what}`;
+}
+
+function isValidReceiptResponse(data: unknown): data is {
+  receipt: { id: string };
+  voucher: { id: string; amount_paise: number };
+  issue: { issued_qty: number; received_qty: number; outstanding_qty: number };
+} {
+  if (!data || typeof data !== "object") return false;
+  const d = data as Record<string, unknown>;
+  const r = d.receipt as Record<string, unknown> | undefined;
+  const v = d.voucher as Record<string, unknown> | undefined;
+  const i = d.issue as Record<string, unknown> | undefined;
+  return (
+    !!r && typeof r.id === "string" && r.id.length > 0 &&
+    !!v && typeof v.id === "string" && v.id.length > 0 && typeof v.amount_paise === "number" &&
+    !!i && typeof i.issued_qty === "number" && typeof i.received_qty === "number" && typeof i.outstanding_qty === "number"
+  );
+}
+
+function loadPersisted(): PendingOp | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_STORAGE_KEY);
+    if (!raw) return null;
+    const op = JSON.parse(raw) as PendingOp;
+    if (op && typeof op.key === "string" && op.body && typeof op.body.issue_id === "string") return op;
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+function persist(op: PendingOp | null) {
+  try {
+    if (op) sessionStorage.setItem(PENDING_STORAGE_KEY, JSON.stringify(op));
+    else sessionStorage.removeItem(PENDING_STORAGE_KEY);
+  } catch {
+    /* ignore */
+  }
 }
 
 const GROUPS: { key: Status; title: string; color: string }[] = [
@@ -82,45 +166,59 @@ export default function SyncPage() {
   const [feedback, setFeedback] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const inFlight = useRef(false);
+  const busyRef = useRef(false);
 
   const [issueId, setIssueId] = useState("");
   const [qty, setQty] = useState("1");
   const [receivedOn, setReceivedOn] = useState(todayLocal());
   const [submitting, setSubmitting] = useState(false);
   const [pendingOp, setPendingOp] = useState<PendingOp | null>(null);
+  const [discardedFp, setDiscardedFp] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (signal?: AbortSignal) => {
     if (inFlight.current) return;
     inFlight.current = true;
     try {
-      const res = await fetchJSON(EP.vouchers, {}, 8000);
-      if (!res.ok) throw new Error(`backend returned ${res.status}`);
-      const data = await res.json();
-      setVouchers(Array.isArray(data.vouchers) ? data.vouchers : []);
-      setError(null);
-      setLastUpdated(new Date());
-    } catch (e) {
-      setError(describeErr(e, "vouchers"));
+      try {
+        const { status, data } = await requestJSON(EP.vouchers, {}, 8000, signal);
+        if (status !== 200) throw new Error(`backend returned ${status}`);
+        const list = (data as { vouchers?: Voucher[] })?.vouchers;
+        setVouchers(Array.isArray(list) ? list : []);
+        setError(null);
+        setLastUpdated(new Date());
+      } catch (e) {
+        if (!(e instanceof ReqError && e.kind === "aborted")) setError(describeErr(e, "vouchers"));
+      }
+      try {
+        const { status, data } = await requestJSON(EP.issues, {}, 8000, signal);
+        if (status !== 200) throw new Error(`backend returned ${status}`);
+        const list = (data as { issues?: Issue[] })?.issues;
+        const issuesList = Array.isArray(list) ? list : [];
+        setIssues(issuesList);
+        setIssueId((cur) => cur || (issuesList[0]?.id ?? ""));
+        setIssuesError(null);
+      } catch (e) {
+        if (!(e instanceof ReqError && e.kind === "aborted")) setIssuesError(describeErr(e, "issues"));
+      }
+    } finally {
+      setLoading(false);
+      inFlight.current = false;
     }
-    try {
-      const res = await fetchJSON(EP.issues, {}, 8000);
-      if (!res.ok) throw new Error(`backend returned ${res.status}`);
-      const data = await res.json();
-      const list: Issue[] = Array.isArray(data.issues) ? data.issues : [];
-      setIssues(list);
-      setIssueId((cur) => cur || (list[0]?.id ?? ""));
-      setIssuesError(null);
-    } catch (e) {
-      setIssuesError(describeErr(e, "issues"));
-    }
-    setLoading(false);
-    inFlight.current = false;
   }, []);
 
   useEffect(() => {
-    load();
-    const id = setInterval(load, 4000);
-    return () => clearInterval(id);
+    const restored = loadPersisted();
+    if (restored) setPendingOp(restored);
+  }, []);
+
+  useEffect(() => {
+    const ctl = new AbortController();
+    void load(ctl.signal);
+    const id = setInterval(() => void load(ctl.signal), 4000);
+    return () => {
+      clearInterval(id);
+      ctl.abort("external");
+    };
   }, [load]);
 
   const doSubmit = useCallback(
@@ -128,7 +226,7 @@ export default function SyncPage() {
       setSubmitting(true);
       setFeedback(null);
       try {
-        const res = await fetchJSON(
+        const { status, data, parseError } = await requestJSON(
           EP.receipts,
           {
             method: "POST",
@@ -137,31 +235,42 @@ export default function SyncPage() {
           },
           10000,
         );
-        const body = await res.json().catch(() => ({}));
-        if (res.status === 201) {
+        if (status === 201) {
+          if (!parseError && isValidReceiptResponse(data)) {
+            persist(null);
+            setPendingOp(null);
+            setFeedback({
+              kind: "ok",
+              msg: `Receipt created — voucher ${formatPaise(data.voucher.amount_paise)} queued (pending). Outstanding now ${data.issue.outstanding_qty}.`,
+            });
+          } else {
+            setFeedback({
+              kind: "err",
+              msg: `Server returned 201 but the response was malformed or incomplete — the receipt may exist. Use "Retry" to resubmit safely with the same key.`,
+            });
+          }
+        } else if (status === 409 || status === 400) {
+          persist(null);
           setPendingOp(null);
-          setFeedback({
-            kind: "ok",
-            msg: `Receipt created — voucher ${formatPaise(body?.voucher?.amount_paise ?? 0)} queued (pending). Outstanding now ${body?.issue?.outstanding_qty}.`,
-          });
-        } else if (res.status === 409 || res.status === 400) {
-          setPendingOp(null);
-          setFeedback({ kind: "err", msg: body?.error ?? `Rejected (HTTP ${res.status}).` });
+          const msg = (data as { error?: string })?.error ?? `Rejected (HTTP ${status}).`;
+          setFeedback({ kind: "err", msg });
         } else {
           setFeedback({
             kind: "err",
-            msg: `Unclear outcome (HTTP ${res.status}). Use "Retry pending" to resubmit safely with the same key.`,
+            msg: `Unclear outcome (HTTP ${status}). Use "Retry" to resubmit safely with the same key.`,
           });
         }
       } catch (e) {
-        const timedOut = e instanceof Error && e.name === "AbortError";
+        if (e instanceof ReqError && e.kind === "aborted") return;
+        const timedOut = e instanceof ReqError && e.kind === "timeout";
         setFeedback({
           kind: "err",
-          msg: `${timedOut ? "Request timed out" : "Network error"} — the receipt may or may not have been created. Use "Retry pending" to resubmit safely with the same key.`,
+          msg: `${timedOut ? "Request timed out" : "Network error"} — the receipt may or may not have been created. Use "Retry" to resubmit safely with the same key.`,
         });
       } finally {
+        busyRef.current = false;
         setSubmitting(false);
-        load();
+        void load();
       }
     },
     [load],
@@ -170,7 +279,7 @@ export default function SyncPage() {
   const createReceipt = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault();
-      if (submitting || pendingOp) return;
+      if (busyRef.current || submitting || pendingOp) return;
       const n = Number(qty);
       if (!issueId) {
         setFeedback({ kind: "err", msg: "Pick an issue first." });
@@ -180,32 +289,51 @@ export default function SyncPage() {
         setFeedback({ kind: "err", msg: "Quantity must be a positive whole number." });
         return;
       }
-      const op: PendingOp = { key: crypto.randomUUID(), body: { issue_id: issueId, qty: n, received_on: receivedOn } };
+      const body = { issue_id: issueId, qty: n, received_on: receivedOn };
+      const fp = fingerprint(body);
+      if (discardedFp && fp === discardedFp) {
+        setFeedback({
+          kind: "err",
+          msg: `This is identical to a submit you just discarded whose outcome was unknown — it may already exist. Change the quantity or date, or verify the lists, before creating an identical one.`,
+        });
+        return;
+      }
+      setDiscardedFp(null);
+      const op: PendingOp = { key: crypto.randomUUID(), body };
+      busyRef.current = true;
+      persist(op);
       setPendingOp(op);
       void doSubmit(op);
     },
-    [submitting, pendingOp, qty, issueId, receivedOn, doSubmit],
+    [submitting, pendingOp, qty, issueId, receivedOn, discardedFp, doSubmit],
   );
 
   const retryPending = useCallback(() => {
-    if (!pendingOp || submitting) return;
+    if (busyRef.current || !pendingOp || submitting) return;
+    busyRef.current = true;
     void doSubmit(pendingOp);
   }, [pendingOp, submitting, doSubmit]);
 
   const discardPending = useCallback(() => {
-    if (submitting) return;
+    if (submitting || !pendingOp) return;
+    setDiscardedFp(fingerprint(pendingOp.body));
+    persist(null);
     setPendingOp(null);
-    setFeedback(null);
-  }, [submitting]);
+    setFeedback({
+      kind: "err",
+      msg: `Stopped tracking this submit here. This did NOT cancel a receipt that may already be recorded on the server — "Retry" (same key) is the safe option. Check the lists before creating an identical one.`,
+    });
+  }, [submitting, pendingOp]);
 
   const retry = useCallback(
     async (voucherId: string) => {
       setRetrying((r) => ({ ...r, [voucherId]: true }));
       setFeedback(null);
       try {
-        const res = await fetchJSON(EP.retry(voucherId), { method: "POST" }, 10000);
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(body?.error ?? `retry failed (${res.status})`);
+        const { status, data } = await requestJSON(EP.retry(voucherId), { method: "POST" }, 10000);
+        if (status < 200 || status >= 300) {
+          throw new Error((data as { error?: string })?.error ?? `retry failed (${status})`);
+        }
         setFeedback({ kind: "ok", msg: "Voucher re-queued for sync." });
         await load();
       } catch (e) {
@@ -233,7 +361,7 @@ export default function SyncPage() {
             {lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : "Loading…"}
           </p>
         </div>
-        <button onClick={() => load()} style={btn} disabled={loading && vouchers === null}>
+        <button onClick={() => void load()} style={btn} disabled={loading && vouchers === null}>
           Refresh
         </button>
       </header>
@@ -281,20 +409,26 @@ export default function SyncPage() {
           </button>
         </form>
 
-        {pendingOp && !submitting && (
+        {pendingOp && (
           <div style={{ ...banner(false), marginBottom: 0 }}>
-            A previous submit is unresolved (key {pendingOp.key.slice(0, 8)}…). Its outcome is unknown. Resubmitting
-            uses the <strong>same idempotency key</strong>, so it will never create a duplicate receipt.
+            An unresolved submit is saved (key {pendingOp.key.slice(0, 8)}…). Its outcome is unknown and it is kept
+            across reloads. Resubmitting reuses the <strong>same idempotency key and payload</strong>, so it can never
+            create a duplicate receipt.
             <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-              <button onClick={retryPending} style={btn}>Retry pending</button>
-              <button onClick={discardPending} style={{ ...btn, background: "#6b7280" }}>Discard</button>
+              <button onClick={retryPending} style={btn} disabled={submitting}>
+                {submitting ? "Retrying…" : "Retry"}
+              </button>
+              <button onClick={discardPending} style={{ ...btn, background: "#6b7280" }} disabled={submitting}>
+                Discard
+              </button>
             </div>
           </div>
         )}
 
         <p style={{ margin: "10px 0 0", fontSize: 12, color: "#777" }}>
-          Each new submit gets one idempotency key for the whole operation; retries reuse that key and payload, so a
-          lost response never creates a second receipt. Receiving more than the outstanding quantity is rejected.
+          Each new submit gets one idempotency key for the whole operation, saved before dispatch; retries reuse that
+          key and payload, so a lost response never creates a second receipt. Receiving more than the outstanding
+          quantity is rejected.
         </p>
       </section>
 
