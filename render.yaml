@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: sutra-mini-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    plan: free
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: MOCK_MODE
+        value: success
+      - key: CORS_ALLOWED_ORIGINS
+        value: "*"
