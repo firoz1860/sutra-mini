@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import styles from "./page.module.css";
-import { formatPaise, type Feedback, type Issue } from "./ui";
+import { formatPaise, type Feedback, type Issue, type SessionGuard } from "./ui";
 
 export type Party = { id: string; name: string; phone: string };
 export type SKU = { id: string; code: string; name: string; image_url: string };
@@ -136,7 +136,17 @@ function Thumb({ url, alt }: { url?: string; alt: string }) {
   return <img className={styles.thumb} src={url} alt="" onError={() => setBroken(true)} loading="lazy" />;
 }
 
-export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: string | null; onChanged: () => void; onUnauthorized: () => void }) {
+export function JobWorkersTab({
+  token,
+  session,
+  onChanged,
+  onUnauthorized,
+}: {
+  token: string | null;
+  session: SessionGuard;
+  onChanged: () => void;
+  onUnauthorized: () => void;
+}) {
   const [parties, setParties] = useState<Party[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -149,8 +159,10 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
 
   const load = useCallback(async () => {
     if (!token) return;
+    const gen = session.current();
     try {
       const { status, data } = await apiJSON("/api/parties", token);
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -159,9 +171,10 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
       setParties(((data as { parties?: Party[] }).parties ?? []) as Party[]);
       setError(null);
     } catch (e) {
+      if (!session.isActive(gen)) return;
       setError(e instanceof Error ? e.message : "could not load job-workers");
     }
-  }, [token, onUnauthorized]);
+  }, [token, onUnauthorized, session]);
 
   useEffect(() => {
     void load();
@@ -172,6 +185,7 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
+    const gen = session.current();
     setBusy(true);
     setFeedback(null);
     try {
@@ -180,6 +194,7 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name, phone }),
       });
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -189,18 +204,21 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
         setPhone("");
         setFeedback({ kind: "ok", msg: "Job-worker added." });
         await load();
+        if (!session.isActive(gen)) return;
         onChanged();
       } else {
         setFeedback({ kind: "err", msg: errOf(data, `could not add job-worker (${status})`) });
       }
     } catch {
+      if (!session.isActive(gen)) return;
       setFeedback({ kind: "err", msg: "Network problem — the job-worker may not have been saved. Check the list and retry if needed." });
     } finally {
-      setBusy(false);
+      if (session.isActive(gen)) setBusy(false);
     }
   };
 
   const saveEdit = async (id: string) => {
+    const gen = session.current();
     setFeedback(null);
     try {
       const { status, data } = await apiJSON(`/api/parties/${encodeURIComponent(id)}`, token, {
@@ -208,6 +226,7 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: editName, phone: editPhone }),
       });
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -216,11 +235,13 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
         setEditId(null);
         setFeedback({ kind: "ok", msg: "Job-worker updated." });
         await load();
+        if (!session.isActive(gen)) return;
         onChanged();
       } else {
         setFeedback({ kind: "err", msg: errOf(data, `could not update (${status})`) });
       }
     } catch {
+      if (!session.isActive(gen)) return;
       setFeedback({ kind: "err", msg: "Network problem while saving." });
     }
   };
@@ -324,7 +345,17 @@ export function JobWorkersTab({ token, onChanged, onUnauthorized }: { token: str
   );
 }
 
-export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | null; onChanged: () => void; onUnauthorized: () => void }) {
+export function SKUsTab({
+  token,
+  session,
+  onChanged,
+  onUnauthorized,
+}: {
+  token: string | null;
+  session: SessionGuard;
+  onChanged: () => void;
+  onUnauthorized: () => void;
+}) {
   const [skus, setSKUs] = useState<SKU[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
@@ -338,8 +369,10 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
 
   const load = useCallback(async () => {
     if (!token) return;
+    const gen = session.current();
     try {
       const { status, data } = await apiJSON("/api/skus", token);
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -348,9 +381,10 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
       setSKUs(((data as { skus?: SKU[] }).skus ?? []) as SKU[]);
       setError(null);
     } catch (e) {
+      if (!session.isActive(gen)) return;
       setError(e instanceof Error ? e.message : "could not load SKUs");
     }
-  }, [token, onUnauthorized]);
+  }, [token, onUnauthorized, session]);
 
   useEffect(() => {
     void load();
@@ -361,6 +395,7 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
+    const gen = session.current();
     setBusy(true);
     setFeedback(null);
     try {
@@ -369,6 +404,7 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ code, name, image_url: imageURL }),
       });
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -379,6 +415,7 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
         setImageURL("");
         setFeedback({ kind: "ok", msg: "SKU added." });
         await load();
+        if (!session.isActive(gen)) return;
         onChanged();
       } else if (status === 409) {
         setFeedback({ kind: "err", msg: "A SKU with that code already exists." });
@@ -386,13 +423,15 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
         setFeedback({ kind: "err", msg: errOf(data, `could not add SKU (${status})`) });
       }
     } catch {
+      if (!session.isActive(gen)) return;
       setFeedback({ kind: "err", msg: "Network problem — the SKU may not have been saved. Check the list and retry if needed." });
     } finally {
-      setBusy(false);
+      if (session.isActive(gen)) setBusy(false);
     }
   };
 
   const saveEdit = async (id: string) => {
+    const gen = session.current();
     setFeedback(null);
     try {
       const { status, data } = await apiJSON(`/api/skus/${encodeURIComponent(id)}`, token, {
@@ -400,6 +439,7 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ name: editName, image_url: editImage }),
       });
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -408,11 +448,13 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
         setEditId(null);
         setFeedback({ kind: "ok", msg: "SKU updated." });
         await load();
+        if (!session.isActive(gen)) return;
         onChanged();
       } else {
         setFeedback({ kind: "err", msg: errOf(data, `could not update (${status})`) });
       }
     } catch {
+      if (!session.isActive(gen)) return;
       setFeedback({ kind: "err", msg: "Network problem while saving." });
     }
   };
@@ -530,8 +572,14 @@ export function SKUsTab({ token, onChanged, onUnauthorized }: { token: string | 
 
 type IssuePayload = { party_id: string; sku_id: string; qty: number; issued_on: string; unit_rate_rupees: string };
 
-export function IssuesTab(props: { token: string | null; issues: Issue[]; onChanged: () => void; onUnauthorized: () => void }) {
-  const { token, issues, onChanged, onUnauthorized } = props;
+export function IssuesTab(props: {
+  token: string | null;
+  issues: Issue[];
+  session: SessionGuard;
+  onChanged: () => void;
+  onUnauthorized: () => void;
+}) {
+  const { token, issues, session, onChanged, onUnauthorized } = props;
   const [parties, setParties] = useState<Party[]>([]);
   const [skus, setSKUs] = useState<SKU[]>([]);
   const [refError, setRefError] = useState<string | null>(null);
@@ -550,8 +598,10 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
 
   const loadRefs = useCallback(async () => {
     if (!token) return;
+    const gen = session.current();
     try {
       const [pr, sr] = await Promise.all([apiJSON("/api/parties", token), apiJSON("/api/skus", token)]);
+      if (!session.isActive(gen)) return;
       if (pr.status === 401 || sr.status === 401) {
         onUnauthorized();
         return;
@@ -562,9 +612,10 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
       setSKUs(((sr.data as { skus?: SKU[] }).skus ?? []) as SKU[]);
       setRefError(null);
     } catch (e) {
+      if (!session.isActive(gen)) return;
       setRefError(e instanceof Error ? e.message : "could not load form options");
     }
-  }, [token, onUnauthorized]);
+  }, [token, onUnauthorized, session]);
 
   useEffect(() => {
     void loadRefs();
@@ -591,6 +642,7 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
     if (!idemRef.current || idemRef.current.fp !== fp) idemRef.current = { fp, key: crypto.randomUUID() };
     const key = idemRef.current.key;
 
+    const gen = session.current();
     busyRef.current = true;
     setBusy(true);
     setFeedback(null);
@@ -600,6 +652,7 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
         headers: { "content-type": "application/json", "Idempotency-Key": key },
         body: JSON.stringify(payload),
       });
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -620,13 +673,16 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
         });
       }
     } catch {
+      if (!session.isActive(gen)) return;
       setFeedback({
         kind: "err",
         msg: "Network problem. Retry safely — the same idempotency key is reused, so a duplicate issue will not be created.",
       });
     } finally {
-      busyRef.current = false;
-      setBusy(false);
+      if (session.isActive(gen)) {
+        busyRef.current = false;
+        setBusy(false);
+      }
     }
   };
 
@@ -740,7 +796,7 @@ export function IssuesTab(props: { token: string | null; issues: Issue[]; onChan
                     {openIssue === i.id ? "Hide receipts" : "View receipts"}
                   </button>
                 </div>
-                {openIssue === i.id && <ReceiptHistory issueId={i.id} token={token} onUnauthorized={onUnauthorized} />}
+                {openIssue === i.id && <ReceiptHistory issueId={i.id} token={token} session={session} onUnauthorized={onUnauthorized} />}
               </li>
             ))}
           </ul>
@@ -768,18 +824,30 @@ type HistoryRow = {
 
 const HISTORY_LIMIT = 20;
 
-export function ReceiptHistory({ issueId, token, onUnauthorized }: { issueId: string; token: string | null; onUnauthorized: () => void }) {
+export function ReceiptHistory({
+  issueId,
+  token,
+  session,
+  onUnauthorized,
+}: {
+  issueId: string;
+  token: string | null;
+  session: SessionGuard;
+  onUnauthorized: () => void;
+}) {
   const [rows, setRows] = useState<HistoryRow[] | null>(null);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    const gen = session.current();
     try {
       const { status, data } = await apiJSON(
         `/api/jobwork/receipts?issue_id=${encodeURIComponent(issueId)}&limit=${HISTORY_LIMIT}&offset=${offset}`,
         token,
       );
+      if (!session.isActive(gen)) return;
       if (status === 401) {
         onUnauthorized();
         return;
@@ -790,9 +858,10 @@ export function ReceiptHistory({ issueId, token, onUnauthorized }: { issueId: st
       setTotal(d.total ?? 0);
       setError(null);
     } catch (e) {
+      if (!session.isActive(gen)) return;
       setError(e instanceof Error ? e.message : "could not load receipts");
     }
-  }, [issueId, offset, token, onUnauthorized]);
+  }, [issueId, offset, token, onUnauthorized, session]);
 
   useEffect(() => {
     void load();

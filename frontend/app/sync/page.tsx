@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import styles from "./page.module.css";
 import {
   FeedbackBanner,
@@ -14,6 +14,7 @@ import {
   type Feedback,
   type Issue,
   type PendingOp,
+  type SessionGuard,
   type Status,
   type Voucher,
 } from "./ui";
@@ -155,15 +156,18 @@ export default function SyncPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const [token, setToken] = useState<string | null>(null);
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
-  // Bumped on every sign-out / session expiry so a late response from a prior
-  // session is discarded instead of repopulating protected data.
+  // Bumped on every sign-out / session expiry / successful sign-in so a late
+  // response from a prior session is discarded instead of mutating a newer one.
   const sessionGen = useRef(0);
   const pollCtl = useRef<AbortController | null>(null);
 
-  // clearSession ends the operator session: it invalidates in-flight work,
-  // stops polling, and wipes all operational data from the screen. A business
-  // mutation is never auto-resubmitted; the pending-receipt record is left in
-  // sessionStorage so its outcome can still be reconciled after signing back in.
+
+  const session = useMemo<SessionGuard>(
+    () => ({ current: () => sessionGen.current, isActive: (gen: number) => sessionGen.current === gen }),
+    [],
+  );
+
+
   const clearSession = useCallback((expired: boolean) => {
     sessionGen.current += 1;
     pollCtl.current?.abort("session-ended");
@@ -182,6 +186,10 @@ export default function SyncPage() {
     setIssuesError(null);
     setRetrying({});
     setTab("overview");
+
+    setSubmitting(false);
+    busyRef.current = false;
+    setDiscardedFp(null);
     setFeedback(expired ? { kind: "err", msg: "Session expired. Please sign in again." } : null);
   }, []);
 
@@ -257,15 +265,15 @@ export default function SyncPage() {
 
   useEffect(() => {
     let active = true;
+
+    const gen = session.current();
     let stored: string | null = null;
     try {
       stored = sessionStorage.getItem(OPERATOR_TOKEN_KEY);
     } catch {
       /* ignore */
     }
-    // Restore a stored token optimistically so the dashboard is available
-    // immediately; the session check below (and any 401 from the first poll)
-    // clears it if it turns out to be stale or invalid.
+
     if (stored) setToken(stored);
     void (async () => {
       try {
@@ -274,7 +282,7 @@ export default function SyncPage() {
           cache: "no-store",
         });
         const data = (await res.json().catch(() => null)) as { authenticated?: boolean; configured?: boolean } | null;
-        if (!active) return;
+        if (!active || !session.isActive(gen)) return;
         setAuthConfigured(typeof data?.configured === "boolean" ? data.configured : null);
         if (stored && !data?.authenticated) {
           setToken(null);
@@ -285,13 +293,13 @@ export default function SyncPage() {
           }
         }
       } catch {
-        if (active) setAuthConfigured(null);
+        if (active && session.isActive(gen)) setAuthConfigured(null);
       }
     })();
     return () => {
       active = false;
     };
-  }, []);
+  }, [session]);
 
   const login = useCallback(async (password: string): Promise<string | null> => {
     try {
@@ -303,6 +311,8 @@ export default function SyncPage() {
       });
       const data = (await res.json().catch(() => null)) as { token?: string; error?: string } | null;
       if (res.status === 200 && data?.token) {
+
+        sessionGen.current += 1;
         setToken(data.token);
         setAuthConfigured(true);
         try {
@@ -325,6 +335,7 @@ export default function SyncPage() {
   const doSubmit = useCallback(
     async (op: PendingOp) => {
       if (!token) return;
+      const gen = session.current();
       setSubmitting(true);
       setFeedback(null);
       try {
@@ -337,9 +348,10 @@ export default function SyncPage() {
           },
           10000,
         );
+
+        if (!session.isActive(gen)) return;
         if (status === 401) {
-          // Keep the pending op persisted (not resubmitted): its outcome is
-          // still unknown and can be reconciled after signing back in.
+
           handleUnauthorized();
           return;
         }
@@ -362,15 +374,19 @@ export default function SyncPage() {
           setFeedback({ kind: "err", msg: `Unclear outcome (HTTP ${status}). ${RETRY_SAFE}` });
         }
       } catch (e) {
+        if (!session.isActive(gen)) return;
         if (e instanceof ReqError && e.kind === "aborted") return;
         setFeedback({ kind: "err", msg: RETRY_SAFE });
       } finally {
-        busyRef.current = false;
-        setSubmitting(false);
-        void load();
+
+        if (session.isActive(gen)) {
+          busyRef.current = false;
+          setSubmitting(false);
+          void load(undefined, gen);
+        }
       }
     },
-    [load, token, handleUnauthorized],
+    [load, token, handleUnauthorized, session],
   );
 
   const createReceipt = useCallback(
@@ -425,6 +441,7 @@ export default function SyncPage() {
   const retryVoucher = useCallback(
     async (voucherId: string) => {
       if (!token) return;
+      const gen = session.current();
       setRetrying((r) => ({ ...r, [voucherId]: true }));
       setFeedback(null);
       try {
@@ -433,24 +450,28 @@ export default function SyncPage() {
           { method: "POST", headers: { Authorization: `Bearer ${token}` } },
           10000,
         );
+        if (!session.isActive(gen)) return;
         if (status === 401) {
           handleUnauthorized();
           return;
         }
         if (status < 200 || status >= 300) throw new Error((data as { error?: string })?.error ?? `retry failed (${status})`);
         setFeedback({ kind: "ok", msg: "Voucher queued for another attempt." });
-        await load();
+        await load(undefined, gen);
       } catch (e) {
+        if (!session.isActive(gen)) return;
         setFeedback({ kind: "err", msg: describeErr(e, "retry") });
       } finally {
-        setRetrying((r) => {
-          const next = { ...r };
-          delete next[voucherId];
-          return next;
-        });
+        if (session.isActive(gen)) {
+          setRetrying((r) => {
+            const next = { ...r };
+            delete next[voucherId];
+            return next;
+          });
+        }
       }
     },
-    [load, token, handleUnauthorized],
+    [load, token, handleUnauthorized, session],
   );
 
   const grouped: Record<Status, Voucher[]> = { pending: [], pushed: [], failed: [] };
@@ -523,9 +544,9 @@ export default function SyncPage() {
         ))}
       </nav>
 
-          {tab === "issues" && <IssuesTab token={token} issues={issues} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
-          {tab === "workers" && <JobWorkersTab token={token} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
-          {tab === "skus" && <SKUsTab token={token} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "issues" && <IssuesTab token={token} issues={issues} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "workers" && <JobWorkersTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "skus" && <SKUsTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
 
       {tab === "overview" && (
         <>

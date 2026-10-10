@@ -34,6 +34,12 @@ export type Issue = {
 export type PendingOp = { key: string; body: { issue_id: string; qty: number; received_on: string } };
 export type Feedback = { kind: "ok" | "err"; msg: string };
 
+
+export type SessionGuard = {
+  current: () => number;
+  isActive: (gen: number) => boolean;
+};
+
 const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" });
 export const formatPaise = (p: number) => inr.format(p / 100);
 export const formatTime = (iso: string) => {

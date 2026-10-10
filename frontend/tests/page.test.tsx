@@ -13,16 +13,33 @@ type Server = {
   password: string;
   receipts: Map<string, unknown>;
   issues: unknown[];
+  vouchers: unknown[];
   postCalls: PostCall[];
   calls: Call[];
   dropNextPost: boolean;
   malformedNextPost: boolean;
   stallVouchers: boolean;
   deferVouchersOnce: Deferred | null;
+  // One-shot response gates: when set, the matching request returns the held
+  // promise, which the test resolves on its own schedule. The server-side effect
+  // (e.g. committing a receipt) still happens immediately, modelling a request
+  // that reached the server even though the client sees the response late.
+  deferReceiptsOnce: Deferred | null;
+  deferRetryOnce: Deferred | null;
+  deferSessionOnce: Deferred | null;
+  deferPartiesGetOnce: Deferred | null;
 };
 
 let server: Server;
 const TOKEN = "tok-test-1";
+
+function makeDeferred(): Deferred {
+  let resolve!: (v: unknown) => void;
+  const promise = new Promise<unknown>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
 
 function resp(status: number, obj: unknown) {
   return Promise.resolve({ status, text: async () => JSON.stringify(obj), json: async () => obj });
@@ -69,6 +86,11 @@ function mockFetch(url: unknown, init: RequestInit): Promise<unknown> {
   const signal = init.signal as AbortSignal;
 
   if (u.endsWith("/api/auth/session")) {
+    if (server.deferSessionOnce) {
+      const d = server.deferSessionOnce;
+      server.deferSessionOnce = null;
+      return d.promise;
+    }
     return resp(200, { authenticated: server.authed && !!auth, configured: server.configured });
   }
   if (u.endsWith("/api/auth/login")) {
@@ -83,7 +105,7 @@ function mockFetch(url: unknown, init: RequestInit): Promise<unknown> {
       return d.promise;
     }
     if (server.stallVouchers) return stallResp(signal);
-    return resp(200, { vouchers: [] });
+    return resp(200, { vouchers: server.vouchers });
   }
   if (u.endsWith("/api/issues")) {
     return resp(200, { issues: server.issues });
@@ -92,7 +114,13 @@ function mockFetch(url: unknown, init: RequestInit): Promise<unknown> {
     const key = (init.headers as Record<string, string>)["Idempotency-Key"];
     const body = JSON.parse(init.body as string) as PostCall["body"];
     server.postCalls.push({ key, body, auth });
+    // The server commits (idempotently) before we decide how the client sees it.
     if (!server.receipts.has(key)) server.receipts.set(key, buildReceipt(key, body));
+    if (server.deferReceiptsOnce) {
+      const d = server.deferReceiptsOnce;
+      server.deferReceiptsOnce = null;
+      return d.promise;
+    }
     if (server.dropNextPost) {
       server.dropNextPost = false;
       return networkError();
@@ -102,6 +130,26 @@ function mockFetch(url: unknown, init: RequestInit): Promise<unknown> {
       return textResp(201, "<<not valid json>>");
     }
     return resp(201, server.receipts.get(key));
+  }
+  if (/\/api\/vouchers\/[^/]+\/retry$/.test(u)) {
+    if (server.deferRetryOnce) {
+      const d = server.deferRetryOnce;
+      server.deferRetryOnce = null;
+      return d.promise;
+    }
+    return resp(200, { ok: true });
+  }
+  if (u.endsWith("/api/parties")) {
+    if (server.deferPartiesGetOnce && (init.method ?? "GET").toUpperCase() === "GET") {
+      const d = server.deferPartiesGetOnce;
+      server.deferPartiesGetOnce = null;
+      return d.promise;
+    }
+    if ((init.method ?? "GET").toUpperCase() === "POST") return resp(201, { party: { id: "p-new", name: "x", phone: "" } });
+    return resp(200, { parties: [] });
+  }
+  if (u.endsWith("/api/skus")) {
+    return resp(200, { skus: [] });
   }
   return resp(404, { error: "not found" });
 }
@@ -115,12 +163,17 @@ beforeEach(() => {
     issues: [
       { id: "issue-1", issued_qty: 10, received_qty: 0, outstanding_qty: 10, sku: { code: "SKU-A", name: "Cotton" }, party: { name: "Weaver" } },
     ],
+    vouchers: [],
     postCalls: [],
     calls: [],
     dropNextPost: false,
     malformedNextPost: false,
     stallVouchers: false,
     deferVouchersOnce: null,
+    deferReceiptsOnce: null,
+    deferRetryOnce: null,
+    deferSessionOnce: null,
+    deferPartiesGetOnce: null,
   };
   sessionStorage.clear();
   if (!globalThis.crypto || typeof globalThis.crypto.randomUUID !== "function") {
@@ -323,5 +376,222 @@ describe("SyncPage receipt reliability", () => {
       await vi.advanceTimersByTimeAsync(12000);
     });
     expect(screen.queryByText(/Could not reach the API/i)).toBeNull();
+  });
+});
+
+// Sign in through the operator form (used after a sign-out to start a new session).
+// Waits for the signed-in state (the dashboard's Sign out control) rather than an
+// enabled create-receipt button, since a preserved pending op intentionally locks
+// the form until the operator reconciles it.
+async function signInViaForm() {
+  fireEvent.change(screen.getByLabelText("Operator sign-in"), { target: { value: "secret" } });
+  fireEvent.click(screen.getByRole("button", { name: /^sign in$/i }));
+  await waitFor(() => expect(screen.queryByRole("button", { name: /sign out/i })).not.toBeNull());
+}
+
+function failedVoucher(id: string) {
+  return {
+    id,
+    type: "jobwork_receipt",
+    source_id: "s",
+    amount_paise: 500,
+    status: "failed",
+    attempts: 2,
+    last_error: "accounting unavailable",
+    client_ref: "jwr-" + id,
+    external_ref: null,
+    next_attempt_at: "",
+    created_at: "",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+}
+
+// These exercise the session-generation guard: a response from a session that has
+// ended or been replaced must never surface feedback, clear pending tracking,
+// change a newer session's loading/busy state, sign out a newer session, or start
+// a protected request with an old token. Deferred responses make ordering exact —
+// no timing-dependent sleeps.
+describe("SyncPage session-lifecycle race protection", () => {
+  it("A: a receipt response resolving after sign-out does not surface or clear pending tracking", async () => {
+    const held = makeDeferred();
+    server.deferReceiptsOnce = held;
+    await renderReady();
+
+    clickCreate();
+    await waitFor(() => expect(server.postCalls.length).toBe(1));
+    const key = server.postCalls[0].key;
+    expect(sessionStorage.getItem("sutra.pendingReceipt")).toBeTruthy();
+
+    // Sign out while the receipt POST is still in flight.
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    expect(screen.getByText(/operator sign-in required/i)).toBeTruthy();
+    const businessBefore = businessCalls().length;
+
+    // The prior session's receipt POST (already committed server-side) resolves now.
+    await act(async () => {
+      held.resolve(await resp(201, server.receipts.get(key)));
+      await Promise.resolve();
+    });
+
+    // Still signed out; no success feedback leaked; no follow-up protected fetch;
+    // pending op preserved (same key + payload) for later reconciliation.
+    expect(screen.getByText(/operator sign-in required/i)).toBeTruthy();
+    expect(screen.queryByText(/Receipt created/i)).toBeNull();
+    expect(businessCalls().length).toBe(businessBefore);
+    const persisted = JSON.parse(sessionStorage.getItem("sutra.pendingReceipt") as string) as {
+      key: string;
+      body: PostCall["body"];
+    };
+    expect(persisted.key).toBe(key);
+    expect(persisted.body).toEqual(server.postCalls[0].body);
+  });
+
+  it("B: a voucher retry resolving after sign-out shows no feedback or protected refresh", async () => {
+    server.vouchers = [failedVoucher("v-1")];
+    const held = makeDeferred();
+    server.deferRetryOnce = held;
+    await renderReady();
+
+    const retryBtn = await screen.findByRole("button", { name: /retry sync/i });
+    fireEvent.click(retryBtn);
+    await waitFor(() => expect(server.calls.some((c) => /\/retry$/.test(c.url))).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    const businessBefore = businessCalls().length;
+
+    await act(async () => {
+      held.resolve(await resp(200, { ok: true }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/operator sign-in required/i)).toBeTruthy();
+    expect(screen.queryByText(/queued for another attempt/i)).toBeNull();
+    expect(businessCalls().length).toBe(businessBefore);
+  });
+
+  it("C1: an old session's 401 does not sign out a newer session", async () => {
+    const held = makeDeferred();
+    server.deferReceiptsOnce = held;
+    await renderReady();
+
+    clickCreate();
+    await waitFor(() => expect(server.postCalls.length).toBe(1));
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    await signInViaForm();
+
+    // Session A's receipt POST resolves 401 (A's token was revoked) only now.
+    await act(async () => {
+      held.resolve(await resp(401, { error: "unauthorized" }));
+      await Promise.resolve();
+    });
+
+    // Session B is untouched: still authenticated, no expiry message.
+    expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
+    expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
+    expect(screen.queryByText(/Session expired/i)).toBeNull();
+  });
+
+  it("C2: an old session's successful receipt does not mutate a newer session", async () => {
+    const held = makeDeferred();
+    server.deferReceiptsOnce = held;
+    await renderReady();
+
+    clickCreate();
+    await waitFor(() => expect(server.postCalls.length).toBe(1));
+    const key = server.postCalls[0].key;
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    await signInViaForm();
+
+    // The preserved pending op is shown in session B for explicit reconciliation.
+    expect(screen.getByText(/Receipt confirmation pending/i)).toBeTruthy();
+
+    // Session A's 201 resolves now; it must not clear B's pending op or show feedback.
+    await act(async () => {
+      held.resolve(await resp(201, server.receipts.get(key)));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText(/Receipt confirmation pending/i)).toBeTruthy();
+    expect(screen.queryByText(/Receipt created/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
+  });
+
+  it("D: a delayed initial session check cannot undo a newer login", async () => {
+    const held = makeDeferred();
+    server.deferSessionOnce = held; // hold the mount-time /api/auth/session response
+    sessionStorage.setItem("sutra.operatorToken", TOKEN);
+    render(<SyncPage />);
+    // Optimistic restore shows the dashboard while the session check is still pending.
+    await waitFor(() => expect(screen.queryByRole("button", { name: /sign out/i })).not.toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    await signInViaForm();
+
+    // The stale initial check finally resolves as unauthenticated for the old token.
+    await act(async () => {
+      held.resolve(await resp(200, { authenticated: false, configured: true }));
+      await Promise.resolve();
+    });
+
+    // The newer login remains active and its token is intact.
+    expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
+    expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
+    expect(sessionStorage.getItem("sutra.operatorToken")).toBe(TOKEN);
+  });
+
+  it("E: a committed-but-lost receipt is reconciled after re-login with the same key, no duplicate", async () => {
+    server.dropNextPost = true; // server commits, the client only sees a network error
+    await renderReady();
+
+    clickCreate();
+    await waitFor(() => expect(screen.getByText(/may have reached the server/i)).toBeTruthy());
+    expect(server.receipts.size).toBe(1);
+    const firstKey = server.postCalls[0].key;
+    expect(sessionStorage.getItem("sutra.pendingReceipt")).toBeTruthy();
+
+    // Sign out: pending details are hidden while signed out, but preserved.
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    expect(screen.queryByText(/Receipt confirmation pending/i)).toBeNull();
+    await signInViaForm();
+
+    // Explicitly reconcile using the same idempotency key + payload.
+    const retryBtn = await screen.findByRole("button", { name: /retry this receipt/i });
+    fireEvent.click(retryBtn);
+    await waitFor(() => expect(screen.getByText(/Receipt created/i)).toBeTruthy());
+
+    const lastCall = server.postCalls[server.postCalls.length - 1];
+    expect(lastCall.key).toBe(firstKey);
+    expect(lastCall.body).toEqual(server.postCalls[0].body);
+    expect(lastCall.auth).toBe(`Bearer ${TOKEN}`);
+    expect(server.receipts.size).toBe(1);
+    expect(sessionStorage.getItem("sutra.pendingReceipt")).toBeNull();
+  });
+
+  it("F: a management request resolving after session replacement does not sign out the newer session", async () => {
+    const held = makeDeferred();
+    server.deferPartiesGetOnce = held; // hold the job-workers tab load
+    await renderReady();
+
+    fireEvent.click(screen.getByRole("button", { name: /job-workers/i }));
+    await waitFor(() =>
+      expect(server.calls.some((c) => c.url.endsWith("/api/parties") && c.method === "GET")).toBe(true),
+    );
+
+    // Replace the session: sign out of A, sign into B.
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    await signInViaForm();
+
+    // Session A's management request resolves 401 after B is active.
+    await act(async () => {
+      held.resolve(await resp(401, { error: "unauthorized" }));
+      await Promise.resolve();
+    });
+
+    // The stale management callback did not sign out session B.
+    expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
+    expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
+    expect(screen.queryByText(/Session expired/i)).toBeNull();
   });
 });
