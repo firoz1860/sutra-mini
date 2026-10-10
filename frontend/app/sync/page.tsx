@@ -43,12 +43,11 @@ const GROUPS: { key: Status; title: string; color: string }[] = [
 ];
 
 
-const DIRECT = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
 const EP = {
-  vouchers: DIRECT ? `${DIRECT}/vouchers` : "/api/vouchers",
-  issues: DIRECT ? `${DIRECT}/issues` : "/api/issues",
-  receipts: DIRECT ? `${DIRECT}/jobwork/receipts` : "/api/receipts",
-  retry: (id: string) => (DIRECT ? `${DIRECT}/vouchers/${id}/retry` : `/api/vouchers/${id}/retry`),
+  vouchers: "/api/vouchers",
+  issues: "/api/issues",
+  receipts: "/api/receipts",
+  retry: (id: string) => `/api/vouchers/${id}/retry`,
 };
 
 export default function SyncPage() {

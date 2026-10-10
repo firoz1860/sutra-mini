@@ -214,15 +214,17 @@ and run the worker and mock-accounting as their own services if you want the ful
 loop in the cloud.
 
 **Vercel (frontend)** — set **one** env variable (Project → Settings → Environment
-Variables), then redeploy:
+Variables, all environments), then redeploy:
 
-| Variable | Value | Why |
-|----------|-------|-----|
-| `NEXT_PUBLIC_API_URL` | `https://sutra-mini-backend.onrender.com` | the browser calls the Render API directly; the backend's CORS headers allow it |
+| Variable | Value |
+|----------|-------|
+| `BACKEND_URL` | `https://sutra-mini-backend.onrender.com` |
 
-Alternatively, to keep the API URL private, set `BACKEND_URL` (not `NEXT_PUBLIC_*`) to the
-same value — the page then routes through the same-origin Next.js proxy instead of calling
-the backend directly. Use one or the other; `NEXT_PUBLIC_API_URL` takes precedence.
+The browser only calls same-origin `/api/*` routes, which the Next.js server forwards to
+`BACKEND_URL`. Nothing cross-origin happens in the browser, so **there is no CORS** — and
+a Render cold-start just surfaces as a brief "retrying" state instead of a CORS failure.
+Do **not** set `NEXT_PUBLIC_API_URL` (direct browser calls would reintroduce cross-origin
+requests and cold-start CORS errors).
 
 ---
 

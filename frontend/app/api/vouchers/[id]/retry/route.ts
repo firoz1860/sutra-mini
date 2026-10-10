@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 const BACKEND = process.env.BACKEND_URL ?? "http://localhost:8080";
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 export async function POST(
   _req: Request,
