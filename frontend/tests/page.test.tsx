@@ -4,6 +4,12 @@ import SyncPage from "../app/sync/page";
 
 type PostCall = { key: string; body: { issue_id: string; qty: number; received_on: string }; auth: string | null };
 type Call = { url: string; method: string; auth: string | null };
+type HistoryRow = {
+  receipt_id: string;
+  received_on: string;
+  qty: number;
+  voucher: { id: string; client_ref: string; amount_paise: number; status: string; attempts: number; last_error: string | null } | null;
+};
 
 type Deferred = { promise: Promise<unknown>; resolve: (v: unknown) => void };
 
@@ -19,11 +25,14 @@ type Server = {
   dropNextPost: boolean;
   malformedNextPost: boolean;
   stallVouchers: boolean;
+  failVouchersOnce: boolean;
+  failIssuesOnce: boolean;
+  vouchers401Once: boolean;
+  receiptsHistory: HistoryRow[];
   deferVouchersOnce: Deferred | null;
-  // One-shot response gates: when set, the matching request returns the held
-  // promise, which the test resolves on its own schedule. The server-side effect
-  // (e.g. committing a receipt) still happens immediately, modelling a request
-  // that reached the server even though the client sees the response late.
+  deferIssuesOnce: Deferred | null;
+  deferHistoryOnce: Deferred | null;
+
   deferReceiptsOnce: Deferred | null;
   deferRetryOnce: Deferred | null;
   deferSessionOnce: Deferred | null;
@@ -99,6 +108,14 @@ function mockFetch(url: unknown, init: RequestInit): Promise<unknown> {
     return resp(401, { error: "incorrect operator password", code: "invalid_credentials" });
   }
   if (u.endsWith("/api/vouchers")) {
+    if (server.vouchers401Once) {
+      server.vouchers401Once = false;
+      return resp(401, { error: "unauthorized", code: "unauthorized" });
+    }
+    if (server.failVouchersOnce) {
+      server.failVouchersOnce = false;
+      return resp(500, { error: "vouchers upstream error" });
+    }
     if (server.deferVouchersOnce) {
       const d = server.deferVouchersOnce;
       server.deferVouchersOnce = null;
@@ -108,13 +125,31 @@ function mockFetch(url: unknown, init: RequestInit): Promise<unknown> {
     return resp(200, { vouchers: server.vouchers });
   }
   if (u.endsWith("/api/issues")) {
+    if (server.failIssuesOnce) {
+      server.failIssuesOnce = false;
+      return resp(500, { error: "issues upstream error" });
+    }
+    if (server.deferIssuesOnce) {
+      const d = server.deferIssuesOnce;
+      server.deferIssuesOnce = null;
+      return d.promise;
+    }
     return resp(200, { issues: server.issues });
+  }
+  if (/\/api\/jobwork\/receipts\?/.test(u) && (init.method ?? "GET").toUpperCase() === "GET") {
+
+    if (!auth) return resp(401, { error: "unauthorized", code: "unauthorized" });
+    if (server.deferHistoryOnce) {
+      const d = server.deferHistoryOnce;
+      server.deferHistoryOnce = null;
+      return d.promise;
+    }
+    return resp(200, { receipts: server.receiptsHistory, total: server.receiptsHistory.length, limit: 20, offset: 0 });
   }
   if (u.endsWith("/api/receipts")) {
     const key = (init.headers as Record<string, string>)["Idempotency-Key"];
     const body = JSON.parse(init.body as string) as PostCall["body"];
     server.postCalls.push({ key, body, auth });
-    // The server commits (idempotently) before we decide how the client sees it.
     if (!server.receipts.has(key)) server.receipts.set(key, buildReceipt(key, body));
     if (server.deferReceiptsOnce) {
       const d = server.deferReceiptsOnce;
@@ -169,7 +204,20 @@ beforeEach(() => {
     dropNextPost: false,
     malformedNextPost: false,
     stallVouchers: false,
+    failVouchersOnce: false,
+    failIssuesOnce: false,
+    vouchers401Once: false,
+    receiptsHistory: [
+      {
+        receipt_id: "rh-1",
+        received_on: "2026-02-03",
+        qty: 4,
+        voucher: { id: "vh-1", client_ref: "jwr-rh-1", amount_paise: 400, status: "pushed", attempts: 1, last_error: null },
+      },
+    ],
     deferVouchersOnce: null,
+    deferIssuesOnce: null,
+    deferHistoryOnce: null,
     deferReceiptsOnce: null,
     deferRetryOnce: null,
     deferSessionOnce: null,
@@ -190,7 +238,6 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// Signed-in render: seed a stored token so the session effect restores it.
 async function renderReady() {
   sessionStorage.setItem("sutra.operatorToken", TOKEN);
   render(<SyncPage />);
@@ -593,5 +640,244 @@ describe("SyncPage session-lifecycle race protection", () => {
     expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
     expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
     expect(screen.queryByText(/Session expired/i)).toBeNull();
+  });
+});
+
+describe("SyncPage receipt history + session feedback", () => {
+  it("opens View receipts for an authenticated operator, renders rows + voucher info, and stays signed in", async () => {
+    await renderReady();
+    fireEvent.click(screen.getByRole("button", { name: /job-work issues/i }));
+
+    const viewBtn = await screen.findByRole("button", { name: /view receipts/i });
+    fireEvent.click(viewBtn);
+
+    await waitFor(() => expect(screen.getByText("jwr-rh-1")).toBeTruthy());
+    // Linked voucher information renders alongside the receipt row.
+    expect(screen.getByText("Pushed")).toBeTruthy();
+    expect(screen.getByText("4")).toBeTruthy();
+    // The history request carried the operator bearer token to the proxy.
+    const histCall = server.calls.find((c) => /\/api\/jobwork\/receipts/.test(c.url));
+    expect(histCall?.auth).toBe(`Bearer ${TOKEN}`);
+    // Still signed in; no spurious expiry.
+    expect(screen.queryByRole("button", { name: /sign out/i })).not.toBeNull();
+    expect(screen.queryByText(/Session expired/i)).toBeNull();
+    expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
+  });
+
+  it("returns the UI to sign-in with an expiry message on a genuine current-session 401", async () => {
+    await renderReady();
+    server.vouchers401Once = true;
+    fireEvent.click(screen.getByRole("button", { name: /refresh list/i }));
+
+    await waitFor(() => expect(screen.getByText(/operator sign-in required/i)).toBeTruthy());
+    expect(screen.getByText(/Session expired/i)).toBeTruthy();
+    expect(sessionStorage.getItem("sutra.operatorToken")).toBeNull();
+  });
+
+  it("clears the stale session-expired feedback on a successful new login", async () => {
+    await renderReady();
+    server.vouchers401Once = true;
+    fireEvent.click(screen.getByRole("button", { name: /refresh list/i }));
+    await waitFor(() => expect(screen.getByText(/Session expired/i)).toBeTruthy());
+
+    await signInViaForm();
+
+    // "Session expired" never lingers beside the signed-in dashboard.
+    expect(screen.queryByText(/Session expired/i)).toBeNull();
+    expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
+  });
+
+  it("does not let a late receipt-history 401 from a replaced session sign out the newer session", async () => {
+    const held = makeDeferred();
+    server.deferHistoryOnce = held;
+    await renderReady();
+
+    fireEvent.click(screen.getByRole("button", { name: /job-work issues/i }));
+    const viewBtn = await screen.findByRole("button", { name: /view receipts/i });
+    fireEvent.click(viewBtn);
+    await waitFor(() => expect(server.calls.some((c) => /\/api\/jobwork\/receipts/.test(c.url))).toBe(true));
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    await signInViaForm();
+
+    await act(async () => {
+      held.resolve(await resp(401, { error: "unauthorized" }));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("button", { name: /create receipt/i })).not.toBeNull();
+    expect(screen.queryByText(/operator sign-in required/i)).toBeNull();
+    expect(screen.queryByText(/Session expired/i)).toBeNull();
+  });
+});
+
+// Deterministic refresh-behaviour tests. Fake timers freeze the 4s background
+// poll so the manual "Refresh list" action is observed in isolation; deferred
+// responses (not sleeps) make the race ordering exact.
+describe("SyncPage refresh list", () => {
+  const vouchersCalls = () => server.calls.filter((c) => c.url.endsWith("/api/vouchers")).length;
+  const issuesCalls = () => server.calls.filter((c) => c.url.endsWith("/api/issues")).length;
+
+  async function renderReadyFake() {
+    vi.useFakeTimers();
+    sessionStorage.setItem("sutra.operatorToken", TOKEN);
+    render(<SyncPage />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60);
+    });
+  }
+  async function flush(ms = 10) {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+  }
+  function clickRefresh() {
+    fireEvent.click(screen.getByRole("button", { name: /refresh list|refreshing/i }));
+  }
+
+  it("refreshes both vouchers and issue totals on click", async () => {
+    await renderReadyFake();
+    const v0 = vouchersCalls();
+    const i0 = issuesCalls();
+    clickRefresh();
+    await flush();
+    expect(vouchersCalls()).toBeGreaterThan(v0);
+    expect(issuesCalls()).toBeGreaterThan(i0);
+  });
+
+  it("shows a pending refreshing state while the request is in flight, then clears it", async () => {
+    await renderReadyFake();
+    const held = makeDeferred();
+    server.deferVouchersOnce = held;
+    clickRefresh();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const busy = screen.getByRole("button", { name: /refreshing/i }) as HTMLButtonElement;
+    expect(busy).toBeTruthy();
+    expect(busy.disabled).toBe(true);
+
+    await act(async () => {
+      held.resolve(await resp(200, { vouchers: server.vouchers }));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect((screen.getByRole("button", { name: /refresh list/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("does not create overlapping requests when the button is clicked repeatedly", async () => {
+    await renderReadyFake();
+    const held = makeDeferred();
+    server.deferVouchersOnce = held;
+    const base = vouchersCalls();
+    clickRefresh();
+    // Further clicks land on the now-disabled button and are ignored.
+    clickRefresh();
+    clickRefresh();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // Exactly one request outstanding — the clicks never overlapped.
+    expect(vouchersCalls() - base).toBe(1);
+
+    await act(async () => {
+      held.resolve(await resp(200, { vouchers: server.vouchers }));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    // Still exactly one request total — no duplicate fired from the extra clicks.
+    expect(vouchersCalls() - base).toBe(1);
+  });
+
+  it("joins an in-flight background poll instead of discarding the click", async () => {
+    await renderReadyFake();
+    const held = makeDeferred();
+    server.deferVouchersOnce = held;
+    // Advance to fire a poll whose vouchers request is held in flight.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(4000);
+    });
+    const base = vouchersCalls();
+    clickRefresh();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // The click did not start an overlapping request...
+    expect(vouchersCalls() - base).toBe(0);
+    // ...but it was acknowledged with the refreshing state.
+    expect(screen.getByRole("button", { name: /refreshing/i })).toBeTruthy();
+
+    await act(async () => {
+      held.resolve(await resp(200, { vouchers: server.vouchers }));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    // Exactly one guaranteed-fresh follow-up ran and announced completion.
+    expect(vouchersCalls() - base).toBe(1);
+    expect(screen.getByText("List refreshed — no changes.")).toBeTruthy();
+  });
+
+  it("renders changed data and announces an update", async () => {
+    await renderReadyFake();
+    server.vouchers = [failedVoucher("v-new")];
+    clickRefresh();
+    await flush();
+    expect(screen.getByText(/jwr-v-new/i)).toBeTruthy();
+    expect(screen.getByText("List updated.")).toBeTruthy();
+  });
+
+  it("still reports completion when nothing changed", async () => {
+    await renderReadyFake();
+    clickRefresh();
+    await flush();
+    expect(screen.getByText("List refreshed — no changes.")).toBeTruthy();
+  });
+
+  it("does not report full success on a partial failure and flags the failed section", async () => {
+    await renderReadyFake();
+    server.failIssuesOnce = true;
+    clickRefresh();
+    await flush();
+    expect(screen.getByText(/Could not refresh the issue list/i)).toBeTruthy();
+    expect(screen.getByText(/Refresh incomplete/i)).toBeTruthy();
+    expect(screen.queryByText("List updated.")).toBeNull();
+  });
+
+  it("preserves existing data and re-enables the button on a full failure", async () => {
+    await renderReadyFake();
+    server.vouchers = [failedVoucher("v-keep")];
+    clickRefresh();
+    await flush();
+    expect(screen.getByText(/jwr-v-keep/i)).toBeTruthy();
+
+    server.failVouchersOnce = true;
+    server.failIssuesOnce = true;
+    clickRefresh();
+    await flush();
+    // Existing records remain visible through the failed refresh.
+    expect(screen.getByText(/jwr-v-keep/i)).toBeTruthy();
+    expect(screen.getByText(/Refresh failed/i)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /refresh list/i }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("drops a late refresh response after logout instead of repopulating the signed-out UI", async () => {
+    await renderReadyFake();
+    const held = makeDeferred();
+    server.deferVouchersOnce = held;
+    clickRefresh();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /sign out/i }));
+    expect(screen.getByText(/operator sign-in required/i)).toBeTruthy();
+
+    await act(async () => {
+      held.resolve(await resp(200, { vouchers: [failedVoucher("v-late2")] }));
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByText(/operator sign-in required/i)).toBeTruthy();
+    expect(screen.queryByText(/jwr-v-late2/i)).toBeNull();
   });
 });
