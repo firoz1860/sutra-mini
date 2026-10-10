@@ -11,14 +11,23 @@ import (
 	"time"
 
 	"github.com/firoz1860/sutra-mini/backend/internal/ask"
+	"github.com/firoz1860/sutra-mini/backend/internal/auth"
+	"github.com/firoz1860/sutra-mini/backend/internal/issues"
 	"github.com/firoz1860/sutra-mini/backend/internal/receipts"
 	"github.com/firoz1860/sutra-mini/backend/internal/store"
 )
 
 const (
-	maxBodyBytes = 1 << 20
-	maxKeyLen    = 200
-	listLimit    = 200
+	maxBodyBytes      = 1 << 20
+	maxKeyLen         = 200
+	listLimit         = 200
+	maxNameLen        = 200
+	maxPhoneLen       = 40
+	maxCodeLen        = 64
+	maxURLLen         = 2048
+	maxHistoryLimit   = 100
+	defaultHistLimit  = 50
+	defaultSessionTTL = 12 * time.Hour
 )
 
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -26,7 +35,9 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 type Server struct {
 	db             *store.DB
 	receipts       *receipts.Service
+	issues         *issues.Service
 	ask            *ask.Service
+	auth           *auth.Authenticator
 	allowedOrigins []string
 }
 
@@ -38,10 +49,18 @@ func New(db *store.DB, allowedOrigins ...string) *Server {
 	if modelKey == "" {
 		modelKey = os.Getenv("OPENAI_API_KEY")
 	}
+	ttl := defaultSessionTTL
+	if raw := os.Getenv("SESSION_TTL"); raw != "" {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			ttl = d
+		}
+	}
 	return &Server{
 		db:             db,
 		receipts:       receipts.New(db.Pool),
+		issues:         issues.New(db.Pool),
 		ask:            ask.New(db, log.Default(), modelKey),
+		auth:           auth.New(os.Getenv("OPERATOR_PASSWORD"), os.Getenv("SESSION_SECRET"), ttl),
 		allowedOrigins: allowedOrigins,
 	}
 }
@@ -51,10 +70,24 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("POST /jobwork/receipts", s.createReceipt)
 	mux.HandleFunc("GET /issues", s.listIssues)
 	mux.HandleFunc("GET /issues/{id}", s.getIssue)
+	mux.HandleFunc("GET /jobwork/receipts", s.listReceiptHistory)
 	mux.HandleFunc("GET /vouchers", s.listVouchers)
 	mux.HandleFunc("POST /vouchers/{id}/retry", s.retryVoucher)
 	mux.HandleFunc("POST /ask", s.askQuestion)
 	mux.HandleFunc("GET /healthz", s.healthz)
+
+	// Operator authentication.
+	mux.HandleFunc("POST /auth/login", s.login)
+	mux.HandleFunc("GET /auth/session", s.session)
+
+	// Management + contact-detail endpoints: operator-only.
+	mux.HandleFunc("GET /parties", s.requireOperator(s.listParties))
+	mux.HandleFunc("POST /parties", s.requireOperator(s.createParty))
+	mux.HandleFunc("PATCH /parties/{id}", s.requireOperator(s.updateParty))
+	mux.HandleFunc("GET /skus", s.requireOperator(s.listSKUs))
+	mux.HandleFunc("POST /skus", s.requireOperator(s.createSKU))
+	mux.HandleFunc("PATCH /skus/{id}", s.requireOperator(s.updateSKU))
+	mux.HandleFunc("POST /jobwork/issues", s.requireOperator(s.createIssue))
 	return s.withCORS(mux)
 }
 
@@ -63,8 +96,8 @@ func (s *Server) withCORS(next http.Handler) http.Handler {
 		if allow := s.resolveOrigin(r.Header.Get("Origin")); allow != "" {
 			w.Header().Set("Access-Control-Allow-Origin", allow)
 			w.Header().Set("Vary", "Origin")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key, Authorization")
 			w.Header().Set("Access-Control-Max-Age", "600")
 		}
 		if r.Method == http.MethodOptions {
@@ -178,11 +211,13 @@ func (s *Server) createReceipt(w http.ResponseWriter, r *http.Request) {
 }
 
 type issueResponse struct {
-	ID          string `json:"id"`
-	IssuedQty   int    `json:"issued_qty"`
-	ReceivedQty int    `json:"received_qty"`
-	Outstanding int    `json:"outstanding_qty"`
-	SKU         struct {
+	ID            string `json:"id"`
+	IssuedQty     int    `json:"issued_qty"`
+	ReceivedQty   int    `json:"received_qty"`
+	Outstanding   int    `json:"outstanding_qty"`
+	IssuedOn      string `json:"issued_on"`
+	UnitRatePaise int64  `json:"unit_rate_paise"`
+	SKU           struct {
 		ID       string `json:"id"`
 		Code     string `json:"code"`
 		Name     string `json:"name"`
@@ -210,29 +245,37 @@ func (s *Server) getIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
 		return
 	}
-	writeJSON(w, http.StatusOK, toIssueResponse(t))
+	writeJSON(w, http.StatusOK, toIssueResponse(t, s.isOperator(r)))
 }
 
-func toIssueResponse(t store.IssueTotals) issueResponse {
+// toIssueResponse maps totals to the wire shape. Phone is contact data, so it
+// is included only when includePhone is true (an authenticated operator view);
+// the public overview always receives an empty phone.
+func toIssueResponse(t store.IssueTotals, includePhone bool) issueResponse {
 	var resp issueResponse
 	resp.ID = t.IssueID
 	resp.IssuedQty = t.IssuedQty
 	resp.ReceivedQty = t.ReceivedQty
 	resp.Outstanding = t.Outstanding
+	resp.IssuedOn = t.IssuedOn
+	resp.UnitRatePaise = t.UnitRatePaise
 	resp.SKU.ID, resp.SKU.Code, resp.SKU.Name, resp.SKU.ImageURL = t.SKU.ID, t.SKU.Code, t.SKU.Name, t.SKU.ImageURL
-	resp.Party.ID, resp.Party.Name, resp.Party.Phone = t.Party.ID, t.Party.Name, t.Party.Phone
+	resp.Party.ID, resp.Party.Name = t.Party.ID, t.Party.Name
+	if includePhone {
+		resp.Party.Phone = t.Party.Phone
+	}
 	return resp
 }
 
 func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
-	issues, err := s.db.ListIssues(r.Context())
+	list, err := s.db.ListIssues(r.Context())
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
 		return
 	}
-	out := make([]issueResponse, 0, len(issues))
-	for _, t := range issues {
-		out = append(out, toIssueResponse(t))
+	out := make([]issueResponse, 0, len(list))
+	for _, t := range list {
+		out = append(out, toIssueResponse(t, false))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"issues": out})
 }

@@ -306,18 +306,21 @@ func (d *DB) MarkFailed(ctx context.Context, id, claimToken, lastErr string) (bo
 }
 
 type IssueTotals struct {
-	IssueID     string
-	IssuedQty   int
-	ReceivedQty int
-	Outstanding int
-	SKU         struct{ ID, Code, Name, ImageURL string }
-	Party       struct{ ID, Name, Phone string }
+	IssueID       string
+	IssuedQty     int
+	ReceivedQty   int
+	Outstanding   int
+	IssuedOn      string
+	UnitRatePaise int64
+	SKU           struct{ ID, Code, Name, ImageURL string }
+	Party         struct{ ID, Name, Phone string }
 }
 
 func (d *DB) ListIssues(ctx context.Context) ([]IssueTotals, error) {
 	rows, err := d.Pool.Query(ctx, `
 		SELECT i.id, i.qty,
 		       COALESCE((SELECT SUM(qty) FROM jobwork_receipts r WHERE r.issue_id=i.id),0) AS received,
+		       to_char(i.issued_on, 'YYYY-MM-DD'), i.unit_rate_paise,
 		       s.id, s.code, s.name, s.image_url,
 		       p.id, p.name, p.phone
 		FROM jobwork_issues i
@@ -332,6 +335,7 @@ func (d *DB) ListIssues(ctx context.Context) ([]IssueTotals, error) {
 	for rows.Next() {
 		var t IssueTotals
 		if err := rows.Scan(&t.IssueID, &t.IssuedQty, &t.ReceivedQty,
+			&t.IssuedOn, &t.UnitRatePaise,
 			&t.SKU.ID, &t.SKU.Code, &t.SKU.Name, &t.SKU.ImageURL,
 			&t.Party.ID, &t.Party.Name, &t.Party.Phone); err != nil {
 			return nil, err
@@ -347,6 +351,7 @@ func (d *DB) IssueTotals(ctx context.Context, id string) (IssueTotals, error) {
 	err := d.Pool.QueryRow(ctx, `
 		SELECT i.id, i.qty,
 		       COALESCE((SELECT SUM(qty) FROM jobwork_receipts r WHERE r.issue_id=i.id),0) AS received,
+		       to_char(i.issued_on, 'YYYY-MM-DD'), i.unit_rate_paise,
 		       s.id, s.code, s.name, s.image_url,
 		       p.id, p.name, p.phone
 		FROM jobwork_issues i
@@ -354,6 +359,7 @@ func (d *DB) IssueTotals(ctx context.Context, id string) (IssueTotals, error) {
 		JOIN parties p ON p.id=i.party_id
 		WHERE i.id=$1`, id).Scan(
 		&t.IssueID, &t.IssuedQty, &t.ReceivedQty,
+		&t.IssuedOn, &t.UnitRatePaise,
 		&t.SKU.ID, &t.SKU.Code, &t.SKU.Name, &t.SKU.ImageURL,
 		&t.Party.ID, &t.Party.Name, &t.Party.Phone)
 	if err != nil {
