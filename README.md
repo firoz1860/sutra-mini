@@ -75,6 +75,16 @@ cp .env.example .env
 ```
 
 `DATABASE_URL` is the only required variable for the servers. All services read it.
+Every service automatically loads a `.env` file from the working directory (or a
+parent) on startup via `config.Load()`; real environment variables always take
+precedence, so no configuration (including the connection string) is hardcoded in
+source. Neon's pooled `-pooler` endpoint and `channel_binding=require` are both
+supported — pooled endpoints switch to pgx's exec query mode automatically.
+
+The API also sends CORS headers so a browser can call it directly cross-origin. Set
+`CORS_ALLOWED_ORIGINS` (comma-separated, default `*`) to scope it, e.g.
+`CORS_ALLOWED_ORIGINS=http://localhost:3000`. The `/sync` page itself uses the
+same-origin Next.js proxy, so it does not depend on CORS.
 
 ### Neon setup
 

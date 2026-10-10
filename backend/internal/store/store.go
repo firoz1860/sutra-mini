@@ -25,6 +25,10 @@ func Open(ctx context.Context, url string) (*DB, error) {
 	if cfg.MaxConns < 10 {
 		cfg.MaxConns = 10
 	}
+
+	if strings.Contains(url, "pooler") || strings.Contains(url, "pgbouncer=true") {
+		cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+	}
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("new pool: %w", err)

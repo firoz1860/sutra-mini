@@ -15,6 +15,8 @@ import (
 )
 
 func main() {
+	config.Load()
+
 	url := config.Str("DATABASE_URL", "")
 	if url == "" {
 		log.Fatal("DATABASE_URL environment variable is required")

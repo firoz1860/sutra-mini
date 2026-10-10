@@ -6,10 +6,13 @@ import (
 	"os"
 	"time"
 
+	"github.com/firoz1860/sutra-mini/backend/internal/config"
 	"github.com/firoz1860/sutra-mini/backend/internal/store"
 )
 
 func main() {
+	config.Load()
+
 	if len(os.Args) < 2 {
 		log.Fatal("usage: migrate [up|seed|all]")
 	}

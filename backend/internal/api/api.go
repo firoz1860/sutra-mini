@@ -21,12 +21,16 @@ const (
 var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 type Server struct {
-	db       *store.DB
-	receipts *receipts.Service
+	db             *store.DB
+	receipts       *receipts.Service
+	allowedOrigins []string
 }
 
-func New(db *store.DB) *Server {
-	return &Server{db: db, receipts: receipts.New(db.Pool)}
+func New(db *store.DB, allowedOrigins ...string) *Server {
+	if len(allowedOrigins) == 0 {
+		allowedOrigins = []string{"*"}
+	}
+	return &Server{db: db, receipts: receipts.New(db.Pool), allowedOrigins: allowedOrigins}
 }
 
 func (s *Server) Routes() http.Handler {
@@ -36,7 +40,39 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /vouchers", s.listVouchers)
 	mux.HandleFunc("POST /vouchers/{id}/retry", s.retryVoucher)
 	mux.HandleFunc("GET /healthz", s.healthz)
-	return mux
+	return s.withCORS(mux)
+}
+
+func (s *Server) withCORS(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allow := s.resolveOrigin(r.Header.Get("Origin")); allow != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allow)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Idempotency-Key")
+			w.Header().Set("Access-Control-Max-Age", "600")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) resolveOrigin(origin string) string {
+	if origin == "" {
+		return ""
+	}
+	for _, o := range s.allowedOrigins {
+		if o == "*" {
+			return "*"
+		}
+		if o == origin {
+			return origin
+		}
+	}
+	return ""
 }
 
 type errorBody struct {

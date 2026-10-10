@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,11 +16,14 @@ import (
 )
 
 func main() {
+	config.Load()
+
 	url := config.Str("DATABASE_URL", "")
 	if url == "" {
 		log.Fatal("DATABASE_URL environment variable is required")
 	}
 	port := config.Str("PORT", "8080")
+	origins := splitCSV(config.Str("CORS_ALLOWED_ORIGINS", "*"))
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -40,7 +44,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.New(db).Routes(),
+		Handler:           api.New(db, origins...).Routes(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
@@ -58,4 +62,15 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("graceful shutdown error: %v", err)
 	}
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
