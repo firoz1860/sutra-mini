@@ -117,7 +117,7 @@ describe("SyncPage receipt reliability", () => {
 
     clickCreate();
 
-    await waitFor(() => expect(screen.getByText(/resubmit safely with the same key/i)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/may have reached the server/i)).toBeTruthy());
     expect(server.receipts.size).toBe(1); // server committed exactly once
     expect(sessionStorage.getItem("sutra.pendingReceipt")).toBeTruthy(); // op persisted
     const firstKey = server.postCalls[0].key;
@@ -126,7 +126,7 @@ describe("SyncPage receipt reliability", () => {
     // Simulate a reload: unmount, then mount a fresh component (sessionStorage persists).
     cleanup();
     render(<SyncPage />);
-    const retryBtn = await screen.findByRole("button", { name: /^retry$/i });
+    const retryBtn = await screen.findByRole("button", { name: /retry this receipt/i });
 
     fireEvent.click(retryBtn);
     await waitFor(() => expect(screen.getByText(/Receipt created/i)).toBeTruthy());

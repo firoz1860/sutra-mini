@@ -1,43 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-
-type Status = "pending" | "pushed" | "failed";
-
-type Voucher = {
-  id: string;
-  type: string;
-  source_id: string;
-  amount_paise: number;
-  status: Status;
-  attempts: number;
-  last_error: string | null;
-  client_ref: string;
-  external_ref: string | null;
-  next_attempt_at: string;
-  created_at: string;
-  updated_at: string;
-};
-
-type Issue = {
-  id: string;
-  issued_qty: number;
-  received_qty: number;
-  outstanding_qty: number;
-  sku: { code: string; name: string };
-  party: { name: string };
-};
-
-type PendingOp = { key: string; body: { issue_id: string; qty: number; received_on: string } };
+import styles from "./page.module.css";
+import {
+  FeedbackBanner,
+  Mark,
+  PendingReceiptNotice,
+  ReceiptForm,
+  Skeleton,
+  StatusSummary,
+  VoucherSection,
+  formatPaise,
+  type Feedback,
+  type Issue,
+  type PendingOp,
+  type Status,
+  type Voucher,
+} from "./ui";
 
 const PENDING_STORAGE_KEY = "sutra.pendingReceipt";
-
-const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" });
-const formatPaise = (p: number) => inr.format(p / 100);
-const formatTime = (iso: string) => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-};
 
 function todayLocal(): string {
   const d = new Date();
@@ -59,12 +40,7 @@ class ReqError extends Error {
 
 type ReqResult = { status: number; data: unknown; parseError: boolean };
 
-async function requestJSON(
-  url: string,
-  opts: RequestInit,
-  timeoutMs: number,
-  external?: AbortSignal,
-): Promise<ReqResult> {
+async function requestJSON(url: string, opts: RequestInit, timeoutMs: number, external?: AbortSignal): Promise<ReqResult> {
   const ctl = new AbortController();
   const onExternalAbort = () => ctl.abort("external");
   if (external) {
@@ -85,10 +61,8 @@ async function requestJSON(
       }
     }
     return { status: res.status, data, parseError };
-  } catch (e) {
-    if (ctl.signal.aborted) {
-      throw new ReqError(ctl.signal.reason === "timeout" ? "timeout" : "aborted");
-    }
+  } catch {
+    if (ctl.signal.aborted) throw new ReqError(ctl.signal.reason === "timeout" ? "timeout" : "aborted");
     throw new ReqError("network");
   } finally {
     clearTimeout(timer);
@@ -97,10 +71,7 @@ async function requestJSON(
 }
 
 function describeErr(e: unknown, what: string): string {
-  if (e instanceof ReqError) {
-    if (e.kind === "timeout") return `${what} request timed out`;
-    return `${what} unavailable`;
-  }
+  if (e instanceof ReqError) return e.kind === "timeout" ? `${what} request timed out` : `${what} unavailable`;
   if (e instanceof Error) return e.message;
   return `failed to load ${what}`;
 }
@@ -143,11 +114,7 @@ function persist(op: PendingOp | null) {
   }
 }
 
-const GROUPS: { key: Status; title: string; color: string }[] = [
-  { key: "pending", title: "Pending", color: "#b45309" },
-  { key: "pushed", title: "Pushed", color: "#15803d" },
-  { key: "failed", title: "Failed", color: "#b91c1c" },
-];
+const RETRY_SAFE = "The request may have reached the server. Retry this receipt safely to check the result.";
 
 const EP = {
   vouchers: "/api/vouchers",
@@ -163,7 +130,7 @@ export default function SyncPage() {
   const [issuesError, setIssuesError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState<Record<string, boolean>>({});
-  const [feedback, setFeedback] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+  const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const inFlight = useRef(false);
   const busyRef = useRef(false);
@@ -244,29 +211,18 @@ export default function SyncPage() {
               msg: `Receipt created — voucher ${formatPaise(data.voucher.amount_paise)} queued (pending). Outstanding now ${data.issue.outstanding_qty}.`,
             });
           } else {
-            setFeedback({
-              kind: "err",
-              msg: `Server returned 201 but the response was malformed or incomplete — the receipt may exist. Use "Retry" to resubmit safely with the same key.`,
-            });
+            setFeedback({ kind: "err", msg: `Server returned 201 but the response was malformed or incomplete. ${RETRY_SAFE}` });
           }
         } else if (status === 409 || status === 400) {
           persist(null);
           setPendingOp(null);
-          const msg = (data as { error?: string })?.error ?? `Rejected (HTTP ${status}).`;
-          setFeedback({ kind: "err", msg });
+          setFeedback({ kind: "err", msg: (data as { error?: string })?.error ?? `Rejected (HTTP ${status}).` });
         } else {
-          setFeedback({
-            kind: "err",
-            msg: `Unclear outcome (HTTP ${status}). Use "Retry" to resubmit safely with the same key.`,
-          });
+          setFeedback({ kind: "err", msg: `Unclear outcome (HTTP ${status}). ${RETRY_SAFE}` });
         }
       } catch (e) {
         if (e instanceof ReqError && e.kind === "aborted") return;
-        const timedOut = e instanceof ReqError && e.kind === "timeout";
-        setFeedback({
-          kind: "err",
-          msg: `${timedOut ? "Request timed out" : "Network error"} — the receipt may or may not have been created. Use "Retry" to resubmit safely with the same key.`,
-        });
+        setFeedback({ kind: "err", msg: RETRY_SAFE });
       } finally {
         busyRef.current = false;
         setSubmitting(false);
@@ -282,11 +238,11 @@ export default function SyncPage() {
       if (busyRef.current || submitting || pendingOp) return;
       const n = Number(qty);
       if (!issueId) {
-        setFeedback({ kind: "err", msg: "Pick an issue first." });
+        setFeedback({ kind: "err", msg: "Choose a job-work issue first." });
         return;
       }
       if (!Number.isInteger(n) || n <= 0) {
-        setFeedback({ kind: "err", msg: "Quantity must be a positive whole number." });
+        setFeedback({ kind: "err", msg: "Enter a whole quantity greater than zero." });
         return;
       }
       const body = { issue_id: issueId, qty: n, received_on: receivedOn };
@@ -294,7 +250,7 @@ export default function SyncPage() {
       if (discardedFp && fp === discardedFp) {
         setFeedback({
           kind: "err",
-          msg: `This is identical to a submit you just discarded whose outcome was unknown — it may already exist. Change the quantity or date, or verify the lists, before creating an identical one.`,
+          msg: "This matches a receipt you stopped tracking whose outcome was unknown — it may already exist. Check the lists before creating an identical one.",
         });
         return;
       }
@@ -321,20 +277,18 @@ export default function SyncPage() {
     setPendingOp(null);
     setFeedback({
       kind: "err",
-      msg: `Stopped tracking this submit here. This did NOT cancel a receipt that may already be recorded on the server — "Retry" (same key) is the safe option. Check the lists before creating an identical one.`,
+      msg: "Stopped tracking this receipt here. It did not cancel a receipt that may already be recorded on the server — Retry (same key) is the safe option.",
     });
   }, [submitting, pendingOp]);
 
-  const retry = useCallback(
+  const retryVoucher = useCallback(
     async (voucherId: string) => {
       setRetrying((r) => ({ ...r, [voucherId]: true }));
       setFeedback(null);
       try {
         const { status, data } = await requestJSON(EP.retry(voucherId), { method: "POST" }, 10000);
-        if (status < 200 || status >= 300) {
-          throw new Error((data as { error?: string })?.error ?? `retry failed (${status})`);
-        }
-        setFeedback({ kind: "ok", msg: "Voucher re-queued for sync." });
+        if (status < 200 || status >= 300) throw new Error((data as { error?: string })?.error ?? `retry failed (${status})`);
+        setFeedback({ kind: "ok", msg: "Voucher queued for another attempt." });
         await load();
       } catch (e) {
         setFeedback({ kind: "err", msg: describeErr(e, "retry") });
@@ -351,163 +305,115 @@ export default function SyncPage() {
 
   const grouped: Record<Status, Voucher[]> = { pending: [], pushed: [], failed: [] };
   for (const v of vouchers ?? []) if (grouped[v.status]) grouped[v.status].push(v);
+  const counts: Record<Status, number> = { pending: grouped.pending.length, pushed: grouped.pushed.length, failed: grouped.failed.length };
+
+  const jump = (s: Status) => {
+    document.getElementById(`section-${s}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const freshness = lastUpdated
+    ? `List updated ${lastUpdated.toLocaleTimeString()}${error ? " (stale)" : ""}`
+    : "Loading the list…";
 
   return (
-    <main style={{ maxWidth: 980, margin: "0 auto", padding: "24px 16px" }}>
-      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h1 style={{ margin: 0, fontSize: 24 }}>Sutra Mini — Voucher Sync</h1>
-          <p style={{ margin: "4px 0 0", color: "#555", fontSize: 14 }}>
-            {lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : "Loading…"}
-          </p>
+    <main className={styles.page}>
+      <header className={styles.header}>
+        <div className={styles.brand}>
+          <Mark />
+          <span>
+            <span className={styles.brandName}>Sutra Mini</span>
+            <span className={styles.studio} style={{ display: "block" }}>
+              Shree Radha Studio
+            </span>
+          </span>
         </div>
-        <button onClick={() => void load()} style={btn} disabled={loading && vouchers === null}>
-          Refresh
-        </button>
+        <div className={styles.headerRight}>
+          <span className={styles.freshness}>{freshness}</span>
+          <button type="button" className={styles.btnSecondary} onClick={() => void load()} disabled={loading && vouchers === null}>
+            Refresh list
+          </button>
+        </div>
       </header>
 
-      {feedback && (
-        <div role="status" style={banner(feedback.kind === "ok")}>
-          {feedback.msg}
+      <div className={styles.titleBlock}>
+        <h1 className={styles.title}>Job-work accounting</h1>
+        <p className={styles.subtitle}>Record received quantities and track their accounting sync.</p>
+      </div>
+
+      <StatusSummary counts={counts} onJump={jump} />
+
+      <FeedbackBanner feedback={feedback} />
+
+      {issuesError && (
+        <div role="alert" className={styles.stale}>
+          Could not refresh the issue list ({issuesError}). The options below may be out of date; Create receipt still
+          uses the server as the source of truth.
         </div>
       )}
+
+      <ReceiptForm
+        issues={issues}
+        issuesLoading={loading && issues.length === 0}
+        issueId={issueId}
+        qty={qty}
+        receivedOn={receivedOn}
+        submitting={submitting}
+        locked={!!pendingOp}
+        onIssue={setIssueId}
+        onQty={setQty}
+        onDate={setReceivedOn}
+        onSubmit={createReceipt}
+      />
+
+      {pendingOp && <PendingReceiptNotice op={pendingOp} submitting={submitting} onRetry={retryPending} onDiscard={discardPending} />}
+
       {error && (
-        <div role="alert" style={banner(false)}>
-          Could not reach the API: {error}. Showing last known data; retrying automatically…
+        <div role="alert" className={styles.stale}>
+          Could not reach the API: {error}. Showing the last results; retrying automatically.
         </div>
       )}
 
-      <section style={{ ...card, marginTop: 20 }}>
-        <h2 style={{ fontSize: 16, margin: "0 0 12px" }}>Create a receipt</h2>
-        {issuesError && (
-          <div role="alert" style={{ ...banner(false), marginTop: 0, marginBottom: 12 }}>
-            Could not refresh issues ({issuesError}); the list below may be stale.
-          </div>
-        )}
-        <form onSubmit={createReceipt} style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end" }}>
-          <label style={fieldCol}>
-            <span style={lbl}>Job-work issue</span>
-            <select value={issueId} onChange={(e) => setIssueId(e.target.value)} style={{ ...input, minWidth: 320 }} disabled={!!pendingOp}>
-              {issues.length === 0 && <option value="">No issues found</option>}
-              {issues.map((i) => (
-                <option key={i.id} value={i.id} disabled={i.outstanding_qty <= 0}>
-                  {i.sku.code} · {i.party.name} — outstanding {i.outstanding_qty} of {i.issued_qty}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={fieldCol}>
-            <span style={lbl}>Quantity</span>
-            <input type="number" min={1} value={qty} onChange={(e) => setQty(e.target.value)} style={{ ...input, width: 90 }} disabled={!!pendingOp} />
-          </label>
-          <label style={fieldCol}>
-            <span style={lbl}>Received on</span>
-            <input type="date" value={receivedOn} onChange={(e) => setReceivedOn(e.target.value)} style={input} disabled={!!pendingOp} />
-          </label>
-          <button type="submit" style={btn} disabled={submitting || !!pendingOp || issues.length === 0}>
-            {submitting ? "Creating…" : "Create receipt"}
-          </button>
-        </form>
+      {vouchers === null ? (
+        <Skeleton />
+      ) : (
+        <>
+          <VoucherSection
+            id="section-pending"
+            title="Pending"
+            description="Waiting to be sent or retried."
+            emptyText="No vouchers waiting to sync."
+            status="pending"
+            vouchers={grouped.pending}
+            retrying={retrying}
+            onRetry={retryVoucher}
+          />
+          <VoucherSection
+            id="section-pushed"
+            title="Pushed"
+            description="Confirmed by the accounting service."
+            emptyText="Confirmed vouchers will appear here."
+            status="pushed"
+            vouchers={grouped.pushed}
+            retrying={retrying}
+            onRetry={retryVoucher}
+          />
+          <VoucherSection
+            id="section-failed"
+            title="Failed"
+            description="Needs attention before another attempt."
+            emptyText="No failed vouchers in the current list."
+            status="failed"
+            vouchers={grouped.failed}
+            retrying={retrying}
+            onRetry={retryVoucher}
+          />
+        </>
+      )}
 
-        {pendingOp && (
-          <div style={{ ...banner(false), marginBottom: 0 }}>
-            An unresolved submit is saved (key {pendingOp.key.slice(0, 8)}…). Its outcome is unknown and it is kept
-            across reloads. Resubmitting reuses the <strong>same idempotency key and payload</strong>, so it can never
-            create a duplicate receipt.
-            <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-              <button onClick={retryPending} style={btn} disabled={submitting}>
-                {submitting ? "Retrying…" : "Retry"}
-              </button>
-              <button onClick={discardPending} style={{ ...btn, background: "#6b7280" }} disabled={submitting}>
-                Discard
-              </button>
-            </div>
-          </div>
-        )}
-
-        <p style={{ margin: "10px 0 0", fontSize: 12, color: "#777" }}>
-          Each new submit gets one idempotency key for the whole operation, saved before dispatch; retries reuse that
-          key and payload, so a lost response never creates a second receipt. Receiving more than the outstanding
-          quantity is rejected.
-        </p>
-      </section>
-
-      {loading && vouchers === null && <p style={{ color: "#555" }}>Loading…</p>}
-
-      {vouchers !== null &&
-        GROUPS.map((g) => (
-          <section key={g.key} style={{ marginTop: 24 }}>
-            <h2 style={{ fontSize: 16, color: g.color, borderBottom: `2px solid ${g.color}`, paddingBottom: 6 }}>
-              {g.title} ({grouped[g.key].length})
-            </h2>
-            {grouped[g.key].length === 0 ? (
-              <p style={{ color: "#777", fontSize: 14 }}>No {g.title.toLowerCase()} vouchers.</p>
-            ) : (
-              <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-                {grouped[g.key].map((v) => (
-                  <li key={v.id} style={{ ...card, marginTop: 10 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div>
-                        <div style={{ fontWeight: 600 }}>{formatPaise(v.amount_paise)}</div>
-                        <div style={{ fontSize: 12, color: "#555" }}>{v.type} · source {v.source_id.slice(0, 8)}…</div>
-                        <div style={{ fontSize: 12, color: "#555" }}>client_ref: {v.client_ref}</div>
-                      </div>
-                      <div style={{ textAlign: "right", fontSize: 12, color: "#555" }}>
-                        <div>attempts: {v.attempts}</div>
-                        <div>updated: {formatTime(v.updated_at)}</div>
-                        {v.external_ref && <div>external_ref: {v.external_ref}</div>}
-                      </div>
-                    </div>
-                    {v.last_error && (
-                      <div style={{ marginTop: 8, fontSize: 12, color: "#b91c1c", wordBreak: "break-word" }}>
-                        last error: {v.last_error}
-                      </div>
-                    )}
-                    {v.status === "failed" && (
-                      <div style={{ marginTop: 10 }}>
-                        <button onClick={() => retry(v.id)} disabled={!!retrying[v.id]} style={btn}>
-                          {retrying[v.id] ? "Retrying…" : "Retry"}
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ))}
+      <footer className={styles.footer}>
+        <span>Counts reflect the current voucher list, not lifetime totals.</span>
+        <span>Sutra Mini — reliable accounting sync</span>
+      </footer>
     </main>
   );
 }
-
-const btn: React.CSSProperties = {
-  background: "#1d4ed8",
-  color: "#fff",
-  border: "none",
-  borderRadius: 6,
-  padding: "8px 16px",
-  fontSize: 14,
-  cursor: "pointer",
-};
-const card: React.CSSProperties = {
-  background: "#fff",
-  border: "1px solid #e5e7eb",
-  borderRadius: 8,
-  padding: 14,
-};
-const input: React.CSSProperties = {
-  padding: "7px 10px",
-  fontSize: 14,
-  border: "1px solid #cbd5e1",
-  borderRadius: 6,
-};
-const fieldCol: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4 };
-const lbl: React.CSSProperties = { fontSize: 12, color: "#555" };
-const banner = (ok: boolean): React.CSSProperties => ({
-  margin: "16px 0",
-  padding: "10px 14px",
-  borderRadius: 6,
-  background: ok ? "#ecfdf5" : "#fef2f2",
-  color: ok ? "#065f46" : "#991b1b",
-  border: `1px solid ${ok ? "#a7f3d0" : "#fecaca"}`,
-});
