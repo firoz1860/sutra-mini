@@ -49,6 +49,7 @@ func New(db *store.DB, allowedOrigins ...string) *Server {
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /jobwork/receipts", s.createReceipt)
+	mux.HandleFunc("GET /issues", s.listIssues)
 	mux.HandleFunc("GET /issues/{id}", s.getIssue)
 	mux.HandleFunc("GET /vouchers", s.listVouchers)
 	mux.HandleFunc("POST /vouchers/{id}/retry", s.retryVoucher)
@@ -209,6 +210,10 @@ func (s *Server) getIssue(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
 		return
 	}
+	writeJSON(w, http.StatusOK, toIssueResponse(t))
+}
+
+func toIssueResponse(t store.IssueTotals) issueResponse {
 	var resp issueResponse
 	resp.ID = t.IssueID
 	resp.IssuedQty = t.IssuedQty
@@ -216,7 +221,20 @@ func (s *Server) getIssue(w http.ResponseWriter, r *http.Request) {
 	resp.Outstanding = t.Outstanding
 	resp.SKU.ID, resp.SKU.Code, resp.SKU.Name, resp.SKU.ImageURL = t.SKU.ID, t.SKU.Code, t.SKU.Name, t.SKU.ImageURL
 	resp.Party.ID, resp.Party.Name, resp.Party.Phone = t.Party.ID, t.Party.Name, t.Party.Phone
-	writeJSON(w, http.StatusOK, resp)
+	return resp
+}
+
+func (s *Server) listIssues(w http.ResponseWriter, r *http.Request) {
+	issues, err := s.db.ListIssues(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "internal_error", "an unexpected error occurred")
+		return
+	}
+	out := make([]issueResponse, 0, len(issues))
+	for _, t := range issues {
+		out = append(out, toIssueResponse(t))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"issues": out})
 }
 
 type voucherResponse struct {
