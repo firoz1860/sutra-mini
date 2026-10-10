@@ -77,6 +77,22 @@ export function FeedbackBanner({ feedback }: { feedback: Feedback | null }) {
   );
 }
 
+export function RefreshIcon({ spinning }: { spinning?: boolean }) {
+  return (
+    <svg
+      className={`${styles.refreshIcon} ${spinning ? styles.refreshIconSpin : ""}`}
+      width="15"
+      height="15"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+      <path d="M13.6 2.4v2.8h-2.8" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 export function StatusSummary({ counts, onJump }: { counts: Record<Status, number>; onJump: (s: Status) => void }) {
   const order: Status[] = ["pending", "pushed", "failed"];
   return (

@@ -264,6 +264,34 @@ button.summaryCard:hover {
   opacity: 0.55;
   cursor: not-allowed;
 }
+.refreshBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.refreshBtn:active:not(:disabled) {
+  background: #eef2ef;
+  border-color: #b9c7bf;
+}
+.refreshIcon {
+  flex: none;
+  color: var(--text-2);
+}
+.refreshIconSpin {
+  animation: spin 650ms linear infinite;
+  transform-origin: center;
+}
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 .spinner {
   display: inline-block;
   width: 13px;
@@ -545,7 +573,8 @@ button.summaryCard:hover {
 @media (prefers-reduced-motion: reduce) {
   .spinner,
   .skelRow,
-  .feedback {
+  .feedback,
+  .refreshIconSpin {
     animation: none;
   }
   .btnPrimary,

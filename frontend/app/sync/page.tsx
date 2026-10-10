@@ -7,6 +7,7 @@ import {
   Mark,
   PendingReceiptNotice,
   ReceiptForm,
+  RefreshIcon,
   Skeleton,
   StatusSummary,
   VoucherSection,
@@ -143,8 +144,14 @@ export default function SyncPage() {
   const [retrying, setRetrying] = useState<Record<string, boolean>>({});
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshNote, setRefreshNote] = useState("");
   const inFlight = useRef(false);
   const busyRef = useRef(false);
+
+  const refreshQueued = useRef(false);
+
+  const dataSig = useRef<string | null>(null);
 
   const [issueId, setIssueId] = useState("");
   const [qty, setQty] = useState("1");
@@ -156,8 +163,7 @@ export default function SyncPage() {
   const [tab, setTab] = useState<Tab>("overview");
   const [token, setToken] = useState<string | null>(null);
   const [authConfigured, setAuthConfigured] = useState<boolean | null>(null);
-  // Bumped on every sign-out / session expiry / successful sign-in so a late
-  // response from a prior session is discarded instead of mutating a newer one.
+
   const sessionGen = useRef(0);
   const pollCtl = useRef<AbortController | null>(null);
 
@@ -189,6 +195,10 @@ export default function SyncPage() {
 
     setSubmitting(false);
     busyRef.current = false;
+    refreshQueued.current = false;
+    dataSig.current = null;
+    setRefreshing(false);
+    setRefreshNote("");
     setDiscardedFp(null);
     setFeedback(expired ? { kind: "err", msg: "Session expired. Please sign in again." } : null);
   }, []);
@@ -197,12 +207,22 @@ export default function SyncPage() {
   const logout = useCallback(() => clearSession(false), [clearSession]);
 
   const load = useCallback(
-    async (signal?: AbortSignal, genArg?: number) => {
+    async (opts?: { signal?: AbortSignal; gen?: number; manual?: boolean }) => {
       if (!token) return;
-      if (inFlight.current) return;
+      const manual = opts?.manual ?? false;
+      if (inFlight.current) {
+
+        if (manual) refreshQueued.current = true;
+        return;
+      }
       inFlight.current = true;
-      const gen = genArg ?? sessionGen.current;
+      const gen = opts?.gen ?? sessionGen.current;
+      const signal = opts?.signal;
       const headers = { Authorization: `Bearer ${token}` };
+      let vouchersOk = false;
+      let issuesOk = false;
+      let nextVouchers: Voucher[] | null = null;
+      let nextIssues: Issue[] | null = null;
       try {
         try {
           const { status, data } = await requestJSON(EP.vouchers, { headers }, 8000, signal);
@@ -213,9 +233,11 @@ export default function SyncPage() {
           }
           if (status !== 200) throw new Error(`backend returned ${status}`);
           const list = (data as { vouchers?: Voucher[] })?.vouchers;
-          setVouchers(Array.isArray(list) ? list : []);
+          nextVouchers = Array.isArray(list) ? list : [];
+          setVouchers(nextVouchers);
           setError(null);
           setLastUpdated(new Date());
+          vouchersOk = true;
         } catch (e) {
           if (sessionGen.current !== gen) return;
           if (!(e instanceof ReqError && e.kind === "aborted")) setError(describeErr(e, "vouchers"));
@@ -229,17 +251,42 @@ export default function SyncPage() {
           }
           if (status !== 200) throw new Error(`backend returned ${status}`);
           const list = (data as { issues?: Issue[] })?.issues;
-          const issuesList = Array.isArray(list) ? list : [];
-          setIssues(issuesList);
-          setIssueId((cur) => cur || (issuesList[0]?.id ?? ""));
+          nextIssues = Array.isArray(list) ? list : [];
+          setIssues(nextIssues);
+          setIssueId((cur) => cur || (nextIssues?.[0]?.id ?? ""));
           setIssuesError(null);
+          issuesOk = true;
         } catch (e) {
           if (sessionGen.current !== gen) return;
           if (!(e instanceof ReqError && e.kind === "aborted")) setIssuesError(describeErr(e, "issues"));
         }
       } finally {
-        if (sessionGen.current === gen) setLoading(false);
+        if (sessionGen.current === gen) {
+          setLoading(false);
+          if (vouchersOk && issuesOk) {
+            const sig = JSON.stringify({ v: nextVouchers, i: nextIssues });
+            if (manual) {
+              const changed = dataSig.current === null || dataSig.current !== sig;
+              setRefreshNote(changed ? "List updated." : "List refreshed — no changes.");
+            }
+            dataSig.current = sig;
+          }
+          if (manual) {
+            setRefreshing(false);
+            if (!vouchersOk && !issuesOk) {
+              setRefreshNote("Refresh failed — could not reach the server. Showing the last loaded data.");
+            } else if (!vouchersOk || !issuesOk) {
+              setRefreshNote(
+                `Refresh incomplete — ${vouchersOk ? "issue totals" : "vouchers"} could not be updated. Showing the last good data for that section.`,
+              );
+            }
+          }
+        }
         inFlight.current = false;
+        if (refreshQueued.current && token && sessionGen.current === gen) {
+          refreshQueued.current = false;
+          void load({ gen, manual: true });
+        }
       }
     },
     [token, handleUnauthorized],
@@ -255,8 +302,8 @@ export default function SyncPage() {
     const ctl = new AbortController();
     pollCtl.current = ctl;
     const gen = sessionGen.current;
-    void load(ctl.signal, gen);
-    const id = setInterval(() => void load(ctl.signal, gen), 4000);
+    void load({ signal: ctl.signal, gen });
+    const id = setInterval(() => void load({ signal: ctl.signal, gen }), 4000);
     return () => {
       clearInterval(id);
       ctl.abort("external");
@@ -313,6 +360,8 @@ export default function SyncPage() {
       if (res.status === 200 && data?.token) {
 
         sessionGen.current += 1;
+        setFeedback(null);
+        setRefreshNote("");
         setToken(data.token);
         setAuthConfigured(true);
         try {
@@ -382,7 +431,7 @@ export default function SyncPage() {
         if (session.isActive(gen)) {
           busyRef.current = false;
           setSubmitting(false);
-          void load(undefined, gen);
+          void load({ gen });
         }
       }
     },
@@ -457,7 +506,7 @@ export default function SyncPage() {
         }
         if (status < 200 || status >= 300) throw new Error((data as { error?: string })?.error ?? `retry failed (${status})`);
         setFeedback({ kind: "ok", msg: "Voucher queued for another attempt." });
-        await load(undefined, gen);
+        await load({ gen });
       } catch (e) {
         if (!session.isActive(gen)) return;
         setFeedback({ kind: "err", msg: describeErr(e, "retry") });
@@ -473,6 +522,16 @@ export default function SyncPage() {
     },
     [load, token, handleUnauthorized, session],
   );
+
+  const requestRefresh = useCallback(() => {
+    if (!token) return;
+    // Reset the live region so a repeat outcome still announces, then show the
+    // refreshing state immediately — even if the click lands behind an in-flight
+    // poll and is coalesced into a single queued follow-up (never dropped).
+    setRefreshNote("");
+    setRefreshing(true);
+    void load({ manual: true });
+  }, [load, token]);
 
   const grouped: Record<Status, Voucher[]> = { pending: [], pushed: [], failed: [] };
   for (const v of vouchers ?? []) if (grouped[v.status]) grouped[v.status].push(v);
@@ -503,9 +562,19 @@ export default function SyncPage() {
           {token && (
             <>
               <span className={styles.freshness}>{freshness}</span>
-              <button type="button" className={styles.btnSecondary} onClick={() => void load()} disabled={loading && vouchers === null}>
-                Refresh list
+              <button
+                type="button"
+                className={`${styles.btnSecondary} ${styles.refreshBtn}`}
+                onClick={requestRefresh}
+                disabled={refreshing || (loading && vouchers === null)}
+                aria-busy={refreshing}
+              >
+                <RefreshIcon spinning={refreshing} />
+                {refreshing ? "Refreshing…" : "Refresh list"}
               </button>
+              <span className={styles.srOnly} role="status" aria-live="polite">
+                {refreshNote}
+              </span>
             </>
           )}
         </div>
