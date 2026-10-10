@@ -183,10 +183,14 @@ BACKEND_URL=http://localhost:8080 npm run dev
 # open http://localhost:3000/sync
 ```
 
-The page shows **Pending / Pushed / Failed** groups, polls every 4s, has a manual
-Refresh, and a **Retry** button on failed vouchers. The browser only talks to the
-Next.js server-side proxy (`/api/vouchers`), so `DATABASE_URL` and the backend URL
-are never exposed to the client.
+The page requires **operator sign-in** (top right) before it loads any operational
+data; signed out, it shows a sign-in-required state and issues no protected requests.
+Once signed in it shows **Pending / Pushed / Failed** groups, polls every 4s, has a
+manual Refresh, and a **Retry** button on failed vouchers, plus the Job-work issues /
+Job-workers / SKUs tabs (see §9). The browser only talks to the Next.js server-side
+proxy under `/api/*` (which forwards the operator token), so `DATABASE_URL`, the backend
+URL, and the operator secret are never exposed to the client. Set `OPERATOR_PASSWORD`
+and `SESSION_SECRET` on the backend (see §9) so sign-in works.
 
 Production build:
 
@@ -231,16 +235,33 @@ requests and cold-start CORS errors).
 ## 5. API contract and curl examples
 
 Status codes: **201** created / exact replay, **400** invalid input, **404** unknown
-issue, **409** overshoot or key reused with a different payload, **500** unexpected.
+issue, **409** overshoot or key reused with a different payload, **401**
+unauthenticated, **500** unexpected.
+
+> **Authentication.** Every endpoint below requires an operator bearer token (only
+> `/healthz` and the `/auth/*` endpoints are public). Obtain one with the operator
+> password (set `OPERATOR_PASSWORD` + `SESSION_SECRET` on the server), then send it as
+> `Authorization: Bearer <token>` on every request. Without it the API returns `401`.
+
+```bash
+# Sign in and capture a token (requires jq, or copy the token manually):
+TOKEN=$(curl -s -X POST http://localhost:8080/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"'"$OPERATOR_PASSWORD"'"}' | jq -r .token)
+```
 
 **Create a receipt** (requires a non-empty `Idempotency-Key`):
 
 ```bash
 curl -i -X POST http://localhost:8080/jobwork/receipts \
+  -H "Authorization: Bearer $TOKEN" \
   -H 'Content-Type: application/json' \
   -H 'Idempotency-Key: demo-key-1' \
   -d '{"issue_id":"33333333-3333-3333-3333-333333330001","qty":4,"received_on":"2026-10-09"}'
 ```
+
+(The remaining `curl` examples in this section likewise need
+`-H "Authorization: Bearer $TOKEN"`; it is omitted below for brevity.)
 
 **Replay the same key + body** → returns the original 201 response byte-for-byte,
 inserts nothing new:
@@ -426,6 +447,157 @@ moving `attempt_baseline` up to the current `attempts`.
 ```
 
 Do not run destructive commands against a database that holds real data.
+
+---
+
+## 9. Workflow extension: job-worker / SKU / issue management
+
+Beyond the original seeded-data assessment, the `/sync` page now lets studio staff run
+the whole workflow through the UI — add a job-worker, add a SKU, record an issue, then
+take receipts and watch the voucher sync — without editing the database by hand. The
+original assessment workflow, data, and reliability guarantees are preserved; this is
+purely **additive**.
+
+### What is seeded vs user-entered
+
+- **Seeded** (via `go run ./cmd/migrate seed`): the original SKUs, parties, and 4
+  job-work issues used by the assessment and the curl examples above. Still present and
+  untouched. The seeded SKU without any issue remains visible in the SKUs tab.
+- **User-entered** (via the UI/API added here): any new job-workers, SKUs, and issues,
+  plus the receipts recorded against them.
+
+### UI layout
+
+`/sync` has four tabs on one page: **Sync overview** (unchanged — receipt entry +
+voucher sync), **Job-work issues**, **Job-workers**, **SKUs**. Management and
+contact-detail views require operator sign-in (top-right).
+
+### New endpoints, forms, and where data lands
+
+| UI form / action | Method + endpoint | Backend table | Auth |
+|------------------|-------------------|---------------|------|
+| Job-workers → list | `GET /parties` | `parties` | operator |
+| Job-workers → Add | `POST /parties` | `parties` | operator |
+| Job-workers → Edit | `PATCH /parties/{id}` | `parties` | operator |
+| SKUs → list | `GET /skus` | `skus` | operator |
+| SKUs → Add | `POST /skus` | `skus` | operator |
+| SKUs → Edit | `PATCH /skus/{id}` | `skus` | operator |
+| Issues → Create | `POST /jobwork/issues` | `jobwork_issues` | operator |
+| Issues → list / detail | `GET /issues`, `GET /issues/{id}` | `jobwork_issues` (+joins) | operator (phone only in the detail view) |
+| Issue → receipt history | `GET /jobwork/receipts?issue_id=…` | `jobwork_receipts` + `vouchers` (joined) | operator |
+| Record receipt (overview) | `POST /jobwork/receipts` | `jobwork_receipts` + `vouchers` | operator |
+| Voucher list / retry sync | `GET /vouchers`, `POST /vouchers/{id}/retry` | `vouchers` | operator |
+| Ask (optional) | `POST /ask` | read-only joins | operator |
+| Operator sign-in | `POST /auth/login`, `GET /auth/session` | — (stateless token) | public |
+| Health | `GET /healthz` | — | public |
+
+**Every business endpoint requires a valid operator bearer token; only
+`GET /healthz`, `POST /auth/login`, and `GET /auth/session` are public.**
+Authentication is enforced in the Go backend (not just the Next.js proxy), so
+direct backend requests are protected too. Missing/invalid/tampered/expired
+tokens get `401` before any business handler runs, and unconfigured auth fails
+closed.
+
+Each endpoint has an equivalent same-origin Next.js proxy under `frontend/app/api/*`,
+so the browser never holds the backend URL or database credentials. The browser keeps
+only the operator session token (in `sessionStorage`) and sends it as a bearer token to
+the proxy, which forwards it.
+
+### Field-level input rules
+
+- **Job-worker name** — required, trimmed, ≤ 200 chars.
+- **Job-worker phone** — **optional** (documented business rule). Stored as `text`,
+  entered with `type="tel"`; validated as digits plus `+ - ( ) space` with **6–20
+  digits**, so international prefixes work and it is not fixed to 10 digits. Not unique —
+  shared numbers are allowed. (Contact detail, not the operator's sign-up.)
+- **SKU code** — required, **unique**, normalized to trimmed upper-case
+  (`sku-new` → `SKU-NEW`); a duplicate returns `409 duplicate_sku_code`. Immutable on
+  edit to preserve references.
+- **SKU name** — required. **Image URL** — optional; validated as an absolute
+  `http`/`https` URL only (the server never fetches it — no SSRF); the UI shows a text
+  fallback if the image fails to load.
+- **Issue** — job-worker + SKU chosen from the database (foreign keys validated), a
+  positive integer quantity, a valid issued date, and a **rate per unit in rupees**.
+  The rupee amount is converted to **integer paise exactly** (no floating-point
+  multiply); more than two decimal places, non-numeric input, and overflow are rejected.
+  The rate is stored on the issue as its valuation snapshot; a receipt voucher is
+  `qty × unit_rate_paise`. SKU/party and (once receipts exist) the rate are immutable.
+
+### Quantity unit convention
+
+Quantities are **whole units** (integers) throughout — issued qty, received qty,
+outstanding. There is no decimal/metre support; the integer model is intentional.
+
+### System-managed fields (never user-editable)
+
+Record IDs, idempotency keys and fingerprints, voucher `client_ref`/`external_ref`,
+sync `status`, `attempts`/`attempt_baseline`, `claim_token`/`claimed_by`/`lease_until`,
+`next_attempt_at`, accounting records, and migration history are all generated or
+managed by the system. "Retry sync" calls the existing retry endpoint — there is no way
+to mark a voucher pushed by hand.
+
+### Duplicate-submission safety
+
+Issue creation uses the **same server-backed idempotency mechanism as receipts**: the
+client sends an `Idempotency-Key`; the server reserves it in `idempotency_requests` with
+a request fingerprint and stores the response, so repeated clicks or a lost response
+never create a second issue (the UI reuses one key per payload across retries). A reused
+key with a different payload returns `409`.
+
+### Authentication and demo limitations
+
+Operator auth is a stateless HMAC-signed session token: `POST /auth/login` checks
+`OPERATOR_PASSWORD` (constant-time) and returns a token signed with `SESSION_SECRET`.
+**All operational reads and business mutations require a valid token**, verified
+server-side (hiding a button is not authorization); only `GET /healthz`,
+`POST /auth/login`, and `GET /auth/session` are public. `GET /auth/session` returns
+only `{authenticated, configured}` — no secrets or business data. **If
+`OPERATOR_PASSWORD`/`SESSION_SECRET` are unset, every protected endpoint is locked by
+default** (login → 503, protected → 401 — fail closed).
+
+In the UI the operator signs in (top right); until then the dashboard shows a
+sign-in-required state and makes **no** protected requests. On sign-out or session
+expiry the UI stops polling, cancels in-flight requests, discards late responses from
+the previous session, clears operational data, and returns to the sign-in state; a
+`401` surfaces as "Session expired. Please sign in again." A business mutation is never
+auto-resubmitted after signing back in. Authenticated responses are returned
+`Cache-Control: no-store`. The browser holds only the session token (in
+`sessionStorage`); the operator password and signing secret live only on the server and
+are never placed in `NEXT_PUBLIC_*`, the browser bundle, API responses, or logs, and the
+Next.js proxy never injects a shared server-side credential for anonymous visitors.
+
+The background worker pushes vouchers directly against the database and does **not**
+depend on any browser operator session. The public demo should keep using **synthetic**
+contacts; this deployment is **not** suitable for confidential, real operational phone
+numbers. Phone is shown only in the authenticated issue **detail** view (omitted from
+the list). There is no public self-registration.
+
+### Verify the extension end to end
+
+With operator auth configured (set `OPERATOR_PASSWORD` + `SESSION_SECRET`) against a
+non-production database (a Neon dev branch or local Postgres):
+
+```bash
+cd backend
+go test ./tests/ -count=1            # includes the extension suite (auth, parties,
+                                     # skus, issues, receipt history, phone redaction)
+```
+
+Through the UI (`/sync`): sign in, add a job-worker (synthetic phone), add a SKU, issue
+10 units at ₹25/unit, receive 3 (voucher ₹75), confirm received 3 / outstanding 7,
+replay the same receipt (nothing duplicates), receive the remaining 7 (outstanding 0),
+confirm a further receipt is rejected, and open the issue's receipt history to see the
+linked job-worker, SKU, and voucher. Reload to confirm persistence.
+
+Clean-checkout frontend + CI (unchanged order):
+
+```bash
+cd frontend
+npm ci
+npm run typecheck
+npm test
+npm run build
+```
 
 ---
 

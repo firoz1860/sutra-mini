@@ -6,19 +6,24 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET(req: NextRequest) {
+  const auth = req.headers.get("authorization") ?? "";
   const status = req.nextUrl.searchParams.get("status");
   const target = new URL("/vouchers", BACKEND);
   if (status) {
     target.searchParams.set("status", status);
   }
   try {
-    const res = await fetch(target.toString(), { cache: "no-store", signal: AbortSignal.timeout(30000) });
+    const res = await fetch(target.toString(), {
+      headers: auth ? { authorization: auth } : {},
+      cache: "no-store",
+      signal: AbortSignal.timeout(30000),
+    });
     const body = await res.text();
     return new NextResponse(body, {
       status: res.status,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", "cache-control": "no-store" },
     });
   } catch {
-    return NextResponse.json({ error: "backend unreachable" }, { status: 502 });
+    return NextResponse.json({ error: "backend unreachable" }, { status: 502, headers: { "cache-control": "no-store" } });
   }
 }

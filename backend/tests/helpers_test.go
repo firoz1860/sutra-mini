@@ -14,6 +14,7 @@ import (
 	embeddedpostgres "github.com/fergusstrange/embedded-postgres"
 	"github.com/firoz1860/sutra-mini/backend/internal/accounting"
 	"github.com/firoz1860/sutra-mini/backend/internal/api"
+	"github.com/firoz1860/sutra-mini/backend/internal/auth"
 	"github.com/firoz1860/sutra-mini/backend/internal/mockacct"
 	"github.com/firoz1860/sutra-mini/backend/internal/store"
 	"github.com/firoz1860/sutra-mini/backend/internal/worker"
@@ -174,11 +175,38 @@ func createIssue(t *testing.T, qty int, ratePaise int64) string {
 	return issueID
 }
 
+// startAPI starts the API with operator authentication configured, since every
+// business endpoint now requires a valid operator token. Tests attach a token
+// via testBearer (HTTP helpers do this automatically).
 func startAPI(t *testing.T) *httptest.Server {
 	t.Helper()
+	t.Setenv("OPERATOR_PASSWORD", testOperatorPassword)
+	t.Setenv("SESSION_SECRET", testSessionSecret)
 	srv := httptest.NewServer(api.New(testDB).Routes())
 	t.Cleanup(srv.Close)
 	return srv
+}
+
+// startUnconfiguredAPI starts the API with no operator credentials set, so auth
+// is unconfigured and every protected endpoint fails closed.
+func startUnconfiguredAPI(t *testing.T) *httptest.Server {
+	t.Helper()
+	t.Setenv("OPERATOR_PASSWORD", "")
+	t.Setenv("SESSION_SECRET", "")
+	srv := httptest.NewServer(api.New(testDB).Routes())
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// testBearer mints a valid operator token signed with the test secret, matching
+// the server started by startAPI.
+func testBearer(t *testing.T) string {
+	t.Helper()
+	tok, _, err := auth.New(testOperatorPassword, testSessionSecret, time.Hour).Login(testOperatorPassword)
+	if err != nil {
+		t.Fatalf("mint test token: %v", err)
+	}
+	return tok
 }
 
 func startMock(t *testing.T, mode mockacct.Mode, delay time.Duration) (*httptest.Server, *mockacct.Server) {

@@ -25,12 +25,20 @@ export type Issue = {
   issued_qty: number;
   received_qty: number;
   outstanding_qty: number;
-  sku: { code: string; name: string };
-  party: { name: string };
+  issued_on?: string;
+  unit_rate_paise?: number;
+  sku: { id?: string; code: string; name: string; image_url?: string };
+  party: { id?: string; name: string; phone?: string };
 };
 
 export type PendingOp = { key: string; body: { issue_id: string; qty: number; received_on: string } };
 export type Feedback = { kind: "ok" | "err"; msg: string };
+
+
+export type SessionGuard = {
+  current: () => number;
+  isActive: (gen: number) => boolean;
+};
 
 const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR" });
 export const formatPaise = (p: number) => inr.format(p / 100);

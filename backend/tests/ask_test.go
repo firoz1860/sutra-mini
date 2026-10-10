@@ -23,6 +23,7 @@ func postAsk(t *testing.T, apiURL, question string) (int, []byte) {
 	t.Helper()
 	req, _ := http.NewRequest(http.MethodPost, apiURL+"/ask", bytes.NewBufferString(fmt.Sprintf(`{"question":%q}`, question)))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testBearer(t))
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("ask request: %v", err)

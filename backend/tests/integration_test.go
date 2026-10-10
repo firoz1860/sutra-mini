@@ -16,6 +16,7 @@ func postReceipt(t *testing.T, apiURL, key, body string) (int, []byte) {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+testBearer(t))
 	if key != "" {
 		req.Header.Set("Idempotency-Key", key)
 	}
@@ -243,6 +244,7 @@ func TestInvalidInputs(t *testing.T) {
 	t.Run("wrong content type", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodPost, api.URL+"/jobwork/receipts", bytes.NewBufferString(good))
 		req.Header.Set("Content-Type", "text/plain")
+		req.Header.Set("Authorization", "Bearer "+testBearer(t))
 		req.Header.Set("Idempotency-Key", "k7")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
