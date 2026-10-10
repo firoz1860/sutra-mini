@@ -298,6 +298,34 @@ type IssueTotals struct {
 	Party       struct{ ID, Name, Phone string }
 }
 
+func (d *DB) ListIssues(ctx context.Context) ([]IssueTotals, error) {
+	rows, err := d.Pool.Query(ctx, `
+		SELECT i.id, i.qty,
+		       COALESCE((SELECT SUM(qty) FROM jobwork_receipts r WHERE r.issue_id=i.id),0) AS received,
+		       s.id, s.code, s.name, s.image_url,
+		       p.id, p.name, p.phone
+		FROM jobwork_issues i
+		JOIN skus s ON s.id=i.sku_id
+		JOIN parties p ON p.id=i.party_id
+		ORDER BY i.issued_on, i.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []IssueTotals
+	for rows.Next() {
+		var t IssueTotals
+		if err := rows.Scan(&t.IssueID, &t.IssuedQty, &t.ReceivedQty,
+			&t.SKU.ID, &t.SKU.Code, &t.SKU.Name, &t.SKU.ImageURL,
+			&t.Party.ID, &t.Party.Name, &t.Party.Phone); err != nil {
+			return nil, err
+		}
+		t.Outstanding = t.IssuedQty - t.ReceivedQty
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
 func (d *DB) IssueTotals(ctx context.Context, id string) (IssueTotals, error) {
 	var t IssueTotals
 	err := d.Pool.QueryRow(ctx, `
