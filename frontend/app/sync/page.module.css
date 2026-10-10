@@ -168,20 +168,22 @@
   font-weight: 600;
 }
 
-/* ---- Section reveal (curtain) ---- */
+/* ---- Section reveal ----
+ * A brief rise + fade on section entry. `backwards` holds the start frame
+ * before paint (no flash) and reverts to the element's natural, UNCLIPPED
+ * style at rest, so a focus ring or shadow on a control at any panel edge is
+ * never clipped. No clip-path persists. */
 .panel {
-  animation: sm-curtain var(--sm-reveal) var(--sm-ease) both;
+  animation: sm-curtain var(--sm-reveal) var(--sm-ease) backwards;
 }
 @keyframes sm-curtain {
   from {
     opacity: 0;
     transform: translateY(6px);
-    clip-path: inset(0 0 9% 0);
   }
   to {
     opacity: 1;
     transform: none;
-    clip-path: inset(0 0 0 0);
   }
 }
 
@@ -416,8 +418,20 @@
   box-shadow: none;
 }
 
-/* Four-sided border-trace — decorative, on hover / keyboard focus of the
- * primary action and the active nav item. Masked ring, never affects layout. */
+/* Four-sided border-trace — decorative highlight for the primary action and
+ * the active nav item. On hover / keyboard focus it traces the perimeter ONCE
+ * (finite) then rests as a calm static brass highlight. The static highlight is
+ * a box-shadow applied unconditionally below, so it is also the no-mask
+ * fallback. Never affects layout; never intercepts pointer events. The
+ * persistent keyboard focus ring (green outline) is defined separately. */
+.btnPrimary:hover:not(:disabled),
+.btnPrimary:focus-visible {
+  box-shadow: 0 0 0 1px var(--sm-brass), var(--sm-shadow-2);
+}
+.tabActive:hover,
+.tabActive:focus-visible {
+  box-shadow: 0 0 0 1px var(--sm-brass), var(--sm-shadow-1);
+}
 @property --sm-ang {
   syntax: "<angle>";
   initial-value: 0deg;
@@ -434,8 +448,8 @@
     --sm-ang: 0deg;
     background: conic-gradient(
       from var(--sm-ang),
-      transparent 0 60%,
-      var(--sm-brass) 78%,
+      rgba(162, 130, 63, 0) 0 64%,
+      var(--sm-brass) 82%,
       rgba(162, 130, 63, 0) 100%
     );
     -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -445,32 +459,31 @@
     opacity: 0;
     pointer-events: none;
     z-index: 1;
-    transition: opacity var(--sm-dur-1) var(--sm-ease);
   }
+  /* One finite pass on hover/focus entry, then it fades out, leaving the
+   * static box-shadow highlight above. Re-entering hover/focus replays once. */
   .btnPrimary:hover:not(:disabled)::after,
   .btnPrimary:focus-visible::after,
   .tabActive:hover::after,
   .tabActive:focus-visible::after {
-    opacity: 1;
-    animation: sm-trace 1.3s linear infinite;
+    animation: sm-trace 900ms var(--sm-ease) 1;
   }
   .btnPrimary:disabled::after {
     opacity: 0;
     animation: none;
   }
 }
-/* Fallback where masking is unavailable: a simple static border highlight. */
-@supports not ((mask-composite: exclude) or (-webkit-mask-composite: xor)) {
-  .btnPrimary:hover:not(:disabled),
-  .btnPrimary:focus-visible,
-  .tabActive:hover,
-  .tabActive:focus-visible {
-    box-shadow: 0 0 0 1.5px var(--sm-brass), var(--sm-shadow-2);
-  }
-}
 @keyframes sm-trace {
-  to {
+  0% {
+    --sm-ang: 0deg;
+    opacity: 1;
+  }
+  85% {
+    opacity: 1;
+  }
+  100% {
     --sm-ang: 360deg;
+    opacity: 0;
   }
 }
 

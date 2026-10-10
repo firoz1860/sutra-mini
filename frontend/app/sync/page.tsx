@@ -636,13 +636,24 @@ export default function SyncPage() {
         ))}
       </nav>
 
-          <div className={styles.panel} key={tab}>
-          {tab === "issues" && <IssuesTab token={token} issues={issues} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
-          {tab === "workers" && <JobWorkersTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
-          {tab === "skus" && <SKUsTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "issues" && (
+            <div className={styles.panel}>
+              <IssuesTab token={token} issues={issues} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />
+            </div>
+          )}
+          {tab === "workers" && (
+            <div className={styles.panel}>
+              <JobWorkersTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />
+            </div>
+          )}
+          {tab === "skus" && (
+            <div className={styles.panel}>
+              <SKUsTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />
+            </div>
+          )}
 
       {tab === "overview" && (
-        <>
+        <div className={styles.panel}>
           <StatusSummary counts={counts} onJump={jump} />
 
       <FeedbackBanner feedback={feedback} />
@@ -712,9 +723,8 @@ export default function SyncPage() {
           />
         </>
       )}
-        </>
+        </div>
       )}
-          </div>
         </>
       )}
 
