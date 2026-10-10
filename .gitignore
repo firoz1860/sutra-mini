@@ -16,8 +16,9 @@ coverage.out
 node_modules/
 /frontend/.next/
 /frontend/out/
-/frontend/next-env.d.ts
 *.tsbuildinfo
+# next-env.d.ts is committed so `tsc --noEmit` resolves CSS-module types on a
+# clean checkout (it supplies `/// <reference types="next" />`) before any build.
 
 # Editor / OS
 .idea/
