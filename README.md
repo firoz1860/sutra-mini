@@ -196,6 +196,34 @@ npm run typecheck
 npm run build
 ```
 
+### Deploy (Render backend + Vercel frontend)
+
+The backend is deployed on Render; the frontend on Vercel. Configuration is entirely
+through environment variables (nothing hardcoded).
+
+**Render (backend service)** — build each Go service, set env vars:
+
+| Variable | Value |
+|----------|-------|
+| `DATABASE_URL` | your Neon pooled URL with `?sslmode=require&channel_binding=require` |
+| `CORS_ALLOWED_ORIGINS` | `https://<your-app>.vercel.app` (or `*` while testing) |
+| `PORT` | Render sets this automatically; the API honors it |
+
+Run migrations once against Neon (`go run ./cmd/migrate all` with `DATABASE_URL` set),
+and run the worker and mock-accounting as their own services if you want the full push
+loop in the cloud.
+
+**Vercel (frontend)** — set **one** env variable (Project → Settings → Environment
+Variables), then redeploy:
+
+| Variable | Value | Why |
+|----------|-------|-----|
+| `NEXT_PUBLIC_API_URL` | `https://sutra-mini-backend.onrender.com` | the browser calls the Render API directly; the backend's CORS headers allow it |
+
+Alternatively, to keep the API URL private, set `BACKEND_URL` (not `NEXT_PUBLIC_*`) to the
+same value — the page then routes through the same-origin Next.js proxy instead of calling
+the backend directly. Use one or the other; `NEXT_PUBLIC_API_URL` takes precedence.
+
 ---
 
 ## 5. API contract and curl examples

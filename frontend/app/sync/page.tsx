@@ -42,6 +42,15 @@ const GROUPS: { key: Status; title: string; color: string }[] = [
   { key: "failed", title: "Failed", color: "#b91c1c" },
 ];
 
+
+const DIRECT = (process.env.NEXT_PUBLIC_API_URL ?? "").replace(/\/$/, "");
+const EP = {
+  vouchers: DIRECT ? `${DIRECT}/vouchers` : "/api/vouchers",
+  issues: DIRECT ? `${DIRECT}/issues` : "/api/issues",
+  receipts: DIRECT ? `${DIRECT}/jobwork/receipts` : "/api/receipts",
+  retry: (id: string) => (DIRECT ? `${DIRECT}/vouchers/${id}/retry` : `/api/vouchers/${id}/retry`),
+};
+
 export default function SyncPage() {
   const [vouchers, setVouchers] = useState<Voucher[] | null>(null);
   const [issues, setIssues] = useState<Issue[]>([]);
@@ -62,8 +71,8 @@ export default function SyncPage() {
     inFlight.current = true;
     try {
       const [vRes, iRes] = await Promise.all([
-        fetch("/api/vouchers", { cache: "no-store" }),
-        fetch("/api/issues", { cache: "no-store" }),
+        fetch(EP.vouchers, { cache: "no-store" }),
+        fetch(EP.issues, { cache: "no-store" }),
       ]);
       if (!vRes.ok) throw new Error(`vouchers: backend returned ${vRes.status}`);
       const vData = await vRes.json();
@@ -105,7 +114,7 @@ export default function SyncPage() {
       setSubmitting(true);
       setFeedback(null);
       try {
-        const res = await fetch("/api/receipts", {
+        const res = await fetch(EP.receipts, {
           method: "POST",
           headers: { "content-type": "application/json", "Idempotency-Key": crypto.randomUUID() },
           body: JSON.stringify({ issue_id: issueId, qty: n, received_on: receivedOn }),
@@ -136,7 +145,7 @@ export default function SyncPage() {
       setRetrying((r) => ({ ...r, [voucherId]: true }));
       setFeedback(null);
       try {
-        const res = await fetch(`/api/vouchers/${voucherId}/retry`, { method: "POST" });
+        const res = await fetch(EP.retry(voucherId), { method: "POST" });
         const body = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(body?.error ?? `retry failed (${res.status})`);
         setFeedback({ kind: "ok", msg: "Voucher re-queued for sync." });
