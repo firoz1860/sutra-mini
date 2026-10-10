@@ -14,6 +14,7 @@ export async function POST(req: NextRequest) {
       headers: { "content-type": "application/json", "Idempotency-Key": key },
       body,
       cache: "no-store",
+      signal: AbortSignal.timeout(30000),
     });
     const out = await res.text();
     return new NextResponse(out, {

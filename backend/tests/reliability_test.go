@@ -7,7 +7,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 
@@ -196,7 +195,15 @@ func TestReliabilityTimeoutThenReconcile(t *testing.T) {
 
 func TestReliabilityRealWorkerCrash(t *testing.T) {
 	truncateAll(t)
-	mock, _ := startMock(t, mockacct.ModeDelay, time.Second)
+	// The specified five-second delay scenario.
+	mock, ms := startMock(t, mockacct.ModeDelay, 5*time.Second)
+	accepted := make(chan string, 16)
+	ms.OnDelayedAccept = func(clientRef string) {
+		select {
+		case accepted <- clientRef:
+		default:
+		}
+	}
 	workerBin := buildWorker(t)
 	id := createVoucher(t, "E-crash", 15000)
 
@@ -206,7 +213,7 @@ func TestReliabilityRealWorkerCrash(t *testing.T) {
 		"WORKER_ID=crash-1",
 		"WORKER_POLL=100ms",
 		"WORKER_LEASE=2s",
-		"WORKER_HTTP_TIMEOUT=300ms",
+		"WORKER_HTTP_TIMEOUT=2s",
 		"WORKER_BACKOFF_BASE=150ms",
 		"WORKER_BACKOFF_MAX=300ms",
 		"WORKER_MAX_ATTEMPTS=50",
@@ -226,16 +233,24 @@ func TestReliabilityRealWorkerCrash(t *testing.T) {
 		}
 	}()
 
-	waitFor(t, 5*time.Second, 20*time.Millisecond, "worker to claim the voucher", func() bool {
-		return getVoucher(t, id).Attempts >= 1
-	})
+	// Wait for proof that the mock actually ACCEPTED the delayed HTTP request
+	// (not merely that the voucher was claimed), then kill the worker mid-delay
+	// before any accounting record exists.
+	select {
+	case <-accepted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("mock never accepted a delayed request from the worker")
+	}
+	if n := countRows(t, `SELECT count(*) FROM accounting_records WHERE client_ref='E-crash'`); n != 0 {
+		t.Fatal("record committed too early; cannot prove crash-before-success")
+	}
 	if err := cmd.Process.Kill(); err != nil {
 		t.Fatalf("kill worker: %v", err)
 	}
 	_, _ = cmd.Process.Wait()
 	killed = true
 
-	waitFor(t, 5*time.Second, 50*time.Millisecond, "accounting record to be committed server-side", func() bool {
+	waitFor(t, 10*time.Second, 100*time.Millisecond, "accounting record to be committed server-side after the 5s delay", func() bool {
 		return countRows(t, `SELECT count(*) FROM accounting_records WHERE client_ref='E-crash'`) == 1
 	})
 	if s := getVoucher(t, id).Status; s == "pushed" {
@@ -268,37 +283,55 @@ func TestReliabilityRealWorkerCrash(t *testing.T) {
 	}
 }
 
-func TestReliabilityTwoWorkers(t *testing.T) {
+func TestReliabilityTwoWorkerProcesses(t *testing.T) {
 	truncateAll(t)
 	mock, _ := startMock(t, mockacct.ModeSuccess, time.Second)
+	workerBin := buildWorker(t)
 
 	const n = 12
 	for i := 0; i < n; i++ {
 		createVoucher(t, "F-"+string(rune('a'+i)), 15000)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	for _, id := range []string{"two-1", "two-2"} {
-		w := newWorker(t, mock.URL, relCfg(id))
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			w.Run(ctx)
-		}()
+	env := func(id string) []string {
+		return append(os.Environ(),
+			"DATABASE_URL="+testURL,
+			"ACCOUNTING_URL="+mock.URL,
+			"WORKER_ID="+id,
+			"WORKER_POLL=100ms",
+			"WORKER_LEASE=5s",
+			"WORKER_HTTP_TIMEOUT=2s",
+			"WORKER_CONCURRENCY=2",
+			"WORKER_MAX_ATTEMPTS=5",
+		)
 	}
+	var procs []*exec.Cmd
+	for _, id := range []string{"proc-1", "proc-2"} {
+		cmd := exec.Command(workerBin)
+		cmd.Env = env(id)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start worker %s: %v", id, err)
+		}
+		procs = append(procs, cmd)
+	}
+	defer func() {
+		for _, c := range procs {
+			_ = c.Process.Kill()
+			_, _ = c.Process.Wait()
+		}
+	}()
 
-	waitFor(t, 15*time.Second, 100*time.Millisecond, "all vouchers to be pushed", func() bool {
+	waitFor(t, 25*time.Second, 200*time.Millisecond, "all vouchers pushed by two independent worker processes", func() bool {
 		return countRows(t, `SELECT count(*) FROM vouchers WHERE status='pushed'`) == n
 	})
-	cancel()
-	wg.Wait()
 
 	if got := countRows(t, `SELECT count(*) FROM accounting_records`); got != n {
 		t.Fatalf("want exactly %d accounting records (one per client_ref), got %d", n, got)
 	}
 	if maxAttempts := countRows(t, `SELECT COALESCE(MAX(attempts),0) FROM vouchers`); maxAttempts != 1 {
-		t.Fatalf("with two safe workers each voucher should be dispatched once; max attempts=%d", maxAttempts)
+		t.Fatalf("with two safe worker processes each voucher should be dispatched once; max attempts=%d", maxAttempts)
 	}
 }
 
@@ -334,7 +367,7 @@ func TestReliabilityStaleClaimFencing(t *testing.T) {
 	truncateAll(t)
 	id := createVoucher(t, "H-fence", 15000)
 
-	claims, err := testDB.Claim(context.Background(), "worker-A", 10*time.Second, 1)
+	claims, err := testDB.Claim(context.Background(), "worker-A", 10*time.Second, 1, 5)
 	if err != nil {
 		t.Fatalf("claim: %v", err)
 	}
@@ -379,6 +412,57 @@ func TestReliabilityStaleClaimFencing(t *testing.T) {
 	}
 	if s := getVoucher(t, id).Status; s != "pushed" {
 		t.Fatalf("want pushed with current token, got %s", s)
+	}
+}
+
+func TestRetryBudgetBoundedAcrossCrashes(t *testing.T) {
+	truncateAll(t)
+	id := createVoucher(t, "budget-crash", 15000)
+	const maxAttempts = 3
+
+	// Simulate a worker that claims then crashes before finalizing, repeatedly.
+	// Each claim increments attempts durably; the short lease lets the next claim reclaim.
+	for i := 1; i <= maxAttempts; i++ {
+		claims, err := testDB.Claim(context.Background(), "crasher", 30*time.Millisecond, 1, maxAttempts)
+		if err != nil {
+			t.Fatalf("claim %d: %v", i, err)
+		}
+		if len(claims) != 1 {
+			t.Fatalf("claim %d: expected 1 claim, got %d", i, len(claims))
+		}
+		if claims[0].Attempts != i {
+			t.Fatalf("claim %d: expected attempts=%d, got %d", i, i, claims[0].Attempts)
+		}
+		time.Sleep(60 * time.Millisecond)
+	}
+
+	// Budget is spent: the voucher must no longer be claimable for dispatch
+	// (attempts cannot grow indefinitely across crashes).
+	claims, err := testDB.Claim(context.Background(), "crasher", 30*time.Millisecond, 1, maxAttempts)
+	if err != nil {
+		t.Fatalf("claim after budget: %v", err)
+	}
+	if len(claims) != 0 {
+		t.Fatalf("exhausted voucher must not be claimable, got %d claims", len(claims))
+	}
+
+	// The reaper moves it to failed with a reason; attempts stay bounded at maxAttempts.
+	n, err := testDB.ReapExhausted(context.Background(), maxAttempts, "retry budget exhausted after repeated claims/crashes")
+	if err != nil {
+		t.Fatalf("reap: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("expected 1 voucher reaped to failed, got %d", n)
+	}
+	v := getVoucher(t, id)
+	if v.Status != "failed" {
+		t.Fatalf("want status failed, got %s", v.Status)
+	}
+	if v.Attempts != maxAttempts {
+		t.Fatalf("attempts must be bounded at %d across crashes, got %d", maxAttempts, v.Attempts)
+	}
+	if v.LastError == nil || *v.LastError == "" {
+		t.Fatal("failed voucher must carry a last_error")
 	}
 }
 

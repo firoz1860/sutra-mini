@@ -7,7 +7,7 @@ export const maxDuration = 60;
 
 export async function GET() {
   try {
-    const res = await fetch(new URL("/issues", BACKEND).toString(), { cache: "no-store" });
+    const res = await fetch(new URL("/issues", BACKEND).toString(), { cache: "no-store", signal: AbortSignal.timeout(30000) });
     const body = await res.text();
     return new NextResponse(body, {
       status: res.status,

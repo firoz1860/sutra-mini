@@ -39,7 +39,7 @@ type Response struct {
 }
 
 func (s *Service) Answer(ctx context.Context, question string) (Response, error) {
-	resp := Response{Question: question, ModelStubbed: s.modelKey == "", ToolCalls: []string{}}
+	resp := Response{Question: question, ModelStubbed: true, ToolCalls: []string{}}
 
 	sku, call, err := s.resolveSKU(ctx, question)
 	resp.ToolCalls = append(resp.ToolCalls, call)

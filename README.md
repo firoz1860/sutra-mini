@@ -310,16 +310,23 @@ curl -s -X POST http://localhost:8080/ask \
 
 ## 6. Tests
 
-The suite uses **real PostgreSQL**. With no `TEST_DATABASE_URL` set it boots a
-disposable embedded PostgreSQL (downloaded once), applies migrations into it, and
-tears it down afterwards. It never truncates an arbitrary supplied database.
+The suite uses **real PostgreSQL** and isolates itself from any existing data. With no
+`TEST_DATABASE_URL` set it boots a disposable embedded PostgreSQL (downloaded once).
+When `TEST_DATABASE_URL` **is** set, the suite does not use that database directly and
+never truncates it: on start it `CREATE DATABASE "sutra_test_<timestamp>"` on the same
+server, points every connection (pool, API, worker subprocess, mock) at that fresh
+database, and on finish `DROP DATABASE ... WITH (FORCE)` — so only resources it created
+are removed. `TEST_DATABASE_URL` must therefore point at a **non-production** server
+where the role may create/drop databases; `TestIsolationLeavesBaseDataUntouched` proves
+pre-existing data in the base database is untouched. Never point it at the deployed
+application database.
 
 ```bash
 cd backend
 go test ./tests/ -count=1            # all integration + reliability tests
 go test ./tests/ -v -count=1         # with per-test names
-# against your own throwaway DB instead of embedded:
-TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/sutra_test?sslmode=disable' go test ./tests/ -count=1
+# against your own non-production server (a fresh child DB is created and dropped):
+TEST_DATABASE_URL='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' go test ./tests/ -count=1
 ```
 
 What runs:

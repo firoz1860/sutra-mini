@@ -42,6 +42,8 @@ type Server struct {
 
 	mu        sync.RWMutex
 	perClient map[string]Mode
+
+	OnDelayedAccept func(clientRef string)
 }
 
 func New(pool *pgxpool.Pool, mode Mode, delay time.Duration, logger *log.Logger) *Server {
@@ -165,6 +167,10 @@ func (s *Server) commitAndRespond(ctx context.Context, w http.ResponseWriter, re
 }
 
 func (s *Server) delayedCommit(w http.ResponseWriter, r *http.Request, req pushRequest) {
+	s.logger.Printf("mock: accepted delayed request client_ref=%s (will commit in %s)", req.ClientRef, s.delay)
+	if s.OnDelayedAccept != nil {
+		s.OnDelayedAccept(req.ClientRef)
+	}
 	type outcome struct {
 		ref string
 		dup bool

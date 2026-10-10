@@ -12,7 +12,7 @@ export async function GET(req: NextRequest) {
     target.searchParams.set("status", status);
   }
   try {
-    const res = await fetch(target.toString(), { cache: "no-store" });
+    const res = await fetch(target.toString(), { cache: "no-store", signal: AbortSignal.timeout(30000) });
     const body = await res.text();
     return new NextResponse(body, {
       status: res.status,

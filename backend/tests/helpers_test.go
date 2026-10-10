@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -16,19 +17,22 @@ import (
 	"github.com/firoz1860/sutra-mini/backend/internal/mockacct"
 	"github.com/firoz1860/sutra-mini/backend/internal/store"
 	"github.com/firoz1860/sutra-mini/backend/internal/worker"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	testDB  *store.DB
-	testURL string
+	testDB     *store.DB
+	testURL    string
+	baseURL    string
+	testDBName string
 )
 
 func TestMain(m *testing.M) {
 	ctx := context.Background()
-	url := os.Getenv("TEST_DATABASE_URL")
+	base := os.Getenv("TEST_DATABASE_URL")
 
 	var ep *embeddedpostgres.EmbeddedPostgres
-	if url == "" {
+	if base == "" {
 		port, err := freePort()
 		if err != nil {
 			fmt.Println("free port:", err)
@@ -48,35 +52,87 @@ func TestMain(m *testing.M) {
 			fmt.Println("embedded postgres start failed:", err)
 			os.Exit(1)
 		}
-		url = fmt.Sprintf("postgres://postgres:postgres@localhost:%d/postgres?sslmode=disable", port)
+		base = fmt.Sprintf("postgres://postgres:postgres@localhost:%d/postgres?sslmode=disable", port)
+	}
+	baseURL = base
+
+	// Create a uniquely named, disposable database for this test run. Every
+	// connection (pool, API, worker subprocess, mock) targets only this database,
+	// and cleanup drops only this database, so a supplied TEST_DATABASE_URL (or any
+	// pre-existing data in the base database) is never truncated.
+	testDBName = fmt.Sprintf("sutra_test_%d", time.Now().UnixNano())
+	admin, err := pgxpool.New(ctx, base)
+	if err != nil {
+		fmt.Println("open admin pool:", err)
+		stop(ep)
+		os.Exit(1)
+	}
+	if _, err := admin.Exec(ctx, `CREATE DATABASE "`+testDBName+`"`); err != nil {
+		fmt.Println("create test database:", err)
+		admin.Close()
+		stop(ep)
+		os.Exit(1)
+	}
+	admin.Close()
+
+	testURL, err = withDatabase(base, testDBName)
+	if err != nil {
+		fmt.Println("build test url:", err)
+		dropTestDB(base)
+		stop(ep)
+		os.Exit(1)
 	}
 
-	db, err := store.Open(ctx, url)
+	db, err := store.Open(ctx, testURL)
 	if err != nil {
 		fmt.Println("open test db:", err)
-		if ep != nil {
-			_ = ep.Stop()
-		}
+		dropTestDB(base)
+		stop(ep)
 		os.Exit(1)
 	}
 	if err := db.Migrate(ctx); err != nil {
 		fmt.Println("migrate test db:", err)
 		db.Close()
-		if ep != nil {
-			_ = ep.Stop()
-		}
+		dropTestDB(base)
+		stop(ep)
 		os.Exit(1)
 	}
 	testDB = db
-	testURL = url
 
 	code := m.Run()
 
 	db.Close()
+	dropTestDB(base)
+	stop(ep)
+	os.Exit(code)
+}
+
+func stop(ep *embeddedpostgres.EmbeddedPostgres) {
 	if ep != nil {
 		_ = ep.Stop()
 	}
-	os.Exit(code)
+}
+
+func dropTestDB(base string) {
+	ctx := context.Background()
+	admin, err := pgxpool.New(ctx, base)
+	if err != nil {
+		fmt.Println("drop test db (open):", err)
+		return
+	}
+	defer admin.Close()
+	if _, err := admin.Exec(ctx, `DROP DATABASE IF EXISTS "`+testDBName+`" WITH (FORCE)`); err != nil {
+		fmt.Println("drop test db:", err)
+	}
+}
+
+func withDatabase(base, dbname string) (string, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	u.Path = "/" + dbname
+	return u.String(), nil
 }
 
 func freePort() (int, error) {

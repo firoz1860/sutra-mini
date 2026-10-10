@@ -11,7 +11,7 @@ export async function POST(
 ) {
   const target = new URL(`/vouchers/${encodeURIComponent(params.id)}/retry`, BACKEND);
   try {
-    const res = await fetch(target.toString(), { method: "POST", cache: "no-store" });
+    const res = await fetch(target.toString(), { method: "POST", cache: "no-store", signal: AbortSignal.timeout(30000) });
     const body = await res.text();
     return new NextResponse(body, {
       status: res.status,

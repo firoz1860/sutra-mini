@@ -223,12 +223,13 @@ type Claim struct {
 	AttemptBaseline int
 }
 
-func (d *DB) Claim(ctx context.Context, workerID string, lease time.Duration, limit int) ([]Claim, error) {
+func (d *DB) Claim(ctx context.Context, workerID string, lease time.Duration, limit, maxAttempts int) ([]Claim, error) {
 	rows, err := d.Pool.Query(ctx, `
 		WITH due AS (
 			SELECT id FROM vouchers
 			WHERE status='pending' AND next_attempt_at <= now()
 			  AND (lease_until IS NULL OR lease_until <= now())
+			  AND attempts - attempt_baseline < $4
 			ORDER BY next_attempt_at
 			FOR UPDATE SKIP LOCKED
 			LIMIT $2
@@ -240,7 +241,7 @@ func (d *DB) Claim(ctx context.Context, workerID string, lease time.Duration, li
 		FROM due
 		WHERE v.id=due.id
 		RETURNING v.id, v.client_ref, v.type, v.source_id, v.amount_paise, v.claim_token, v.attempts, v.attempt_baseline`,
-		workerID, limit, lease.Seconds())
+		workerID, limit, lease.Seconds(), maxAttempts)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +255,21 @@ func (d *DB) Claim(ctx context.Context, workerID string, lease time.Duration, li
 		out = append(out, c)
 	}
 	return out, rows.Err()
+}
+
+func (d *DB) ReapExhausted(ctx context.Context, maxAttempts int, reason string) (int, error) {
+	tag, err := d.Pool.Exec(ctx, `
+		UPDATE vouchers
+		SET status='failed',
+		    last_error = COALESCE(last_error, $2),
+		    lease_until=NULL, claim_token=NULL, claimed_by=NULL, updated_at=now()
+		WHERE status='pending'
+		  AND (lease_until IS NULL OR lease_until <= now())
+		  AND attempts - attempt_baseline >= $1`, maxAttempts, reason)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
 }
 
 func (d *DB) MarkPushed(ctx context.Context, id, claimToken, externalRef string) (bool, error) {

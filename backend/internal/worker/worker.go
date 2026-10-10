@@ -89,6 +89,14 @@ func (w *Worker) Run(ctx context.Context) {
 }
 
 func (w *Worker) dispatch(ctx context.Context, sem chan struct{}, wg *sync.WaitGroup) {
+	if n, err := w.db.ReapExhausted(ctx, w.cfg.MaxAttempts, "retry budget exhausted after repeated claims/crashes"); err != nil {
+		if ctx.Err() == nil {
+			w.logger.Printf("worker=%s reap error: %v", w.cfg.WorkerID, err)
+		}
+	} else if n > 0 {
+		w.logger.Printf("worker=%s reaped %d voucher(s) with exhausted budget to failed", w.cfg.WorkerID, n)
+	}
+
 	acquired := 0
 acquire:
 	for acquired < w.cfg.Concurrency {
@@ -103,7 +111,7 @@ acquire:
 		return
 	}
 	claimCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	claims, err := w.db.Claim(claimCtx, w.cfg.WorkerID, w.cfg.Lease, acquired)
+	claims, err := w.db.Claim(claimCtx, w.cfg.WorkerID, w.cfg.Lease, acquired, w.cfg.MaxAttempts)
 	cancel()
 	if err != nil {
 		for i := 0; i < acquired; i++ {
@@ -129,7 +137,10 @@ acquire:
 }
 
 func (w *Worker) DrainOnce(ctx context.Context) (int, error) {
-	claims, err := w.db.Claim(ctx, w.cfg.WorkerID, w.cfg.Lease, w.cfg.Concurrency)
+	if _, err := w.db.ReapExhausted(ctx, w.cfg.MaxAttempts, "retry budget exhausted after repeated claims/crashes"); err != nil {
+		return 0, err
+	}
+	claims, err := w.db.Claim(ctx, w.cfg.WorkerID, w.cfg.Lease, w.cfg.Concurrency, w.cfg.MaxAttempts)
 	if err != nil {
 		return 0, err
 	}
