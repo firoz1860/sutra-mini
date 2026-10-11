@@ -146,6 +146,9 @@ export default function SyncPage() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshNote, setRefreshNote] = useState("");
+  const [refreshFailed, setRefreshFailed] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
   const inFlight = useRef(false);
   const busyRef = useRef(false);
 
@@ -274,11 +277,15 @@ export default function SyncPage() {
           if (manual) {
             setRefreshing(false);
             if (!vouchersOk && !issuesOk) {
+              setRefreshFailed(true);
               setRefreshNote("Refresh failed — could not reach the server. Showing the last loaded data.");
             } else if (!vouchersOk || !issuesOk) {
+              setRefreshFailed(true);
               setRefreshNote(
                 `Refresh incomplete — ${vouchersOk ? "issue totals" : "vouchers"} could not be updated. Showing the last good data for that section.`,
               );
+            } else {
+              setRefreshFailed(false);
             }
           }
         }
@@ -529,9 +536,20 @@ export default function SyncPage() {
     // refreshing state immediately — even if the click lands behind an in-flight
     // poll and is coalesced into a single queued follow-up (never dropped).
     setRefreshNote("");
+    setRefreshFailed(false);
     setRefreshing(true);
     void load({ manual: true });
   }, [load, token]);
+
+  // Cast the sticky header's shadow only once content scrolls beneath it.
+  // A 1px sentinel + IntersectionObserver avoids any per-pixel scroll handler.
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const obs = new IntersectionObserver(([entry]) => setScrolled(!entry.isIntersecting), { threshold: 0 });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [token]);
 
   const grouped: Record<Status, Voucher[]> = { pending: [], pushed: [], failed: [] };
   for (const v of vouchers ?? []) if (grouped[v.status]) grouped[v.status].push(v);
@@ -547,7 +565,8 @@ export default function SyncPage() {
 
   return (
     <main className={styles.page}>
-      <header className={styles.header}>
+      <div ref={sentinelRef} className={styles.sentinel} aria-hidden="true" />
+      <header className={`${styles.header} ${scrolled ? styles.headerScrolled : ""}`}>
         <div className={styles.brand}>
           <Mark />
           <span>
@@ -572,7 +591,11 @@ export default function SyncPage() {
                 <RefreshIcon spinning={refreshing} />
                 {refreshing ? "Refreshing…" : "Refresh list"}
               </button>
-              <span className={styles.srOnly} role="status" aria-live="polite">
+              <span
+                className={`${styles.refreshStatus} ${refreshFailed ? styles.refreshStatusErr : ""}`}
+                role="status"
+                aria-live="polite"
+              >
                 {refreshNote}
               </span>
             </>
@@ -613,12 +636,24 @@ export default function SyncPage() {
         ))}
       </nav>
 
-          {tab === "issues" && <IssuesTab token={token} issues={issues} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
-          {tab === "workers" && <JobWorkersTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
-          {tab === "skus" && <SKUsTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />}
+          {tab === "issues" && (
+            <div className={styles.panel}>
+              <IssuesTab token={token} issues={issues} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />
+            </div>
+          )}
+          {tab === "workers" && (
+            <div className={styles.panel}>
+              <JobWorkersTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />
+            </div>
+          )}
+          {tab === "skus" && (
+            <div className={styles.panel}>
+              <SKUsTab token={token} session={session} onChanged={() => void load()} onUnauthorized={handleUnauthorized} />
+            </div>
+          )}
 
       {tab === "overview" && (
-        <>
+        <div className={styles.panel}>
           <StatusSummary counts={counts} onJump={jump} />
 
       <FeedbackBanner feedback={feedback} />
@@ -688,7 +723,7 @@ export default function SyncPage() {
           />
         </>
       )}
-        </>
+        </div>
       )}
         </>
       )}

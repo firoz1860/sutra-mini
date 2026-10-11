@@ -28,6 +28,9 @@ Thumbs.db
 # Embedded Postgres test data (if ever written into the repo tree)
 .embedded-postgres-go/
 
+# Browser-automation output (local verification screenshots)
+.playwright-mcp/
+
 # Kept out of the public repo (submitted separately per request)
 AGENT_NOTES.md
 RECORDING_SCRIPT.md

@@ -786,6 +786,7 @@ export function IssuesTab(props: {
                   {typeof i.unit_rate_paise === "number" && <Field label="Rate/unit" value={formatPaise(i.unit_rate_paise)} num />}
                   {i.issued_on && <Field label="Issued on" value={i.issued_on} num />}
                 </div>
+                <IssueProgress issued={i.issued_qty} received={i.received_qty} />
                 <div className={styles.rowActions}>
                   <button
                     type="button"
@@ -796,12 +797,39 @@ export function IssuesTab(props: {
                     {openIssue === i.id ? "Hide receipts" : "View receipts"}
                   </button>
                 </div>
-                {openIssue === i.id && <ReceiptHistory issueId={i.id} token={token} session={session} onUnauthorized={onUnauthorized} />}
+                {openIssue === i.id && (
+                  <div className={styles.historyPanel}>
+                    <div className={styles.historyHead}>Receipt history</div>
+                    <ReceiptHistory issueId={i.id} token={token} session={session} onUnauthorized={onUnauthorized} />
+                  </div>
+                )}
               </li>
             ))}
           </ul>
         )}
       </section>
+    </div>
+  );
+}
+
+function IssueProgress({ issued, received }: { issued: number; received: number }) {
+  const safeIssued = issued > 0 ? issued : 0;
+  const pct = safeIssued > 0 ? Math.min(100, Math.round((received / safeIssued) * 100)) : 0;
+  const done = safeIssued > 0 && received >= safeIssued;
+  const label = safeIssued > 0 ? `${received} of ${issued} received (${pct}%)` : "No quantity issued yet";
+  return (
+    <div className={styles.progress}>
+      <div
+        className={styles.progressTrack}
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+        aria-label={`Received progress: ${label}`}
+      >
+        <div className={`${styles.progressFill} ${done ? styles.progressFillDone : ""}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className={styles.progressText}>{label}</span>
     </div>
   );
 }
